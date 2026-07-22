@@ -1,0 +1,9 @@
+{
+  "functions": {
+    "api/scan.js": { "maxDuration": 60 },
+    "api/telegram-webhook.js": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/scan", "schedule": "0 16-23 * * *" }
+  ]
+}
