@@ -1,5 +1,5 @@
 // api/telegram-webhook.js
-import { createDbClient } from '../lib/db.js';
+import { createDbClient, setConfigValue } from '../lib/db.js';
 import { fetchSchedule, parseScheduleGames } from '../lib/mlb.js';
 import { sendTelegramMessage } from '../lib/telegram.js';
 import { runScan } from './scan.js';
@@ -29,6 +29,29 @@ export default async function handler(req, res) {
         chatId,
         result.signalsSent > 0 ? `Se enviaron ${result.signalsSent} señales nuevas.` : 'No se encontraron señales con edge suficiente ahora mismo.'
       );
+    } else if (text.startsWith('/partido ')) {
+      const query = text.slice('/partido '.length).trim().toLowerCase();
+      const today = new Date().toISOString().slice(0, 10);
+      const games = parseScheduleGames(await fetchSchedule(today));
+      const match = games.find(g => g.homeTeam.toLowerCase().includes(query) || g.awayTeam.toLowerCase().includes(query));
+      if (!match) {
+        await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, chatId, `No encontré un juego de hoy para "${query}".`);
+      } else {
+        await sendTelegramMessage(
+          process.env.TELEGRAM_BOT_TOKEN,
+          chatId,
+          `${match.awayTeam} @ ${match.homeTeam} — ${STATUS_LABEL[match.status]}. Usa /senales para ver el análisis completo del día (incluye este juego si tiene edge suficiente).`
+        );
+      }
+    } else if (text.startsWith('/config edge ')) {
+      const value = Number(text.slice('/config edge '.length).trim());
+      if (Number.isNaN(value) || value <= 0 || value >= 1) {
+        await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, chatId, 'Uso: /config edge 0.05 (un número entre 0 y 1, ej. 0.05 = 5%).');
+      } else {
+        const db = createDbClient();
+        await setConfigValue(db, 'edge_threshold', String(value));
+        await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, chatId, `Umbral de edge actualizado a ${(value * 100).toFixed(1)}%.`);
+      }
     }
     res.status(200).json({ ok: true });
   } catch (err) {
