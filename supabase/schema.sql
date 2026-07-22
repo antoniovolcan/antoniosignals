@@ -20,7 +20,7 @@ create table player_map (
 
 create table signals (
   id bigserial primary key,
-  game_pk bigint references games(game_pk),
+  game_pk bigint not null references games(game_pk),
   market text not null,
   selection text not null,
   odds_price numeric not null,
