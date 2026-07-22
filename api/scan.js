@@ -101,36 +101,44 @@ export async function runScan() {
       await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
     }
 
-    const rosterRaw = await fetchTeamRoster(game.homeTeamId);
-    const roster = parseRoster(rosterRaw);
-    const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'batter_hits');
+    try {
+      const rosterRaw = await fetchTeamRoster(game.homeTeamId);
+      const roster = parseRoster(rosterRaw);
+      const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'batter_hits');
 
-    for (const player of roster.slice(0, 5)) {
-      const outcomes = parsePlayerPropOutcomes(propEventOdds, 'batter_hits', player.fullName);
-      if (outcomes.length === 0) continue;
+      for (const player of roster.slice(0, 5)) {
+        try {
+          const outcomes = parsePlayerPropOutcomes(propEventOdds, 'batter_hits', player.fullName);
+          if (outcomes.length === 0) continue;
 
-      const battingStats = await fetchBatterSeasonStats(player.personId, SEASON);
-      const { avg, paPerGame } = extractBattingAvgAndPA(battingStats);
-      const expectedRate = avg * paPerGame;
+          const battingStats = await fetchBatterSeasonStats(player.personId, SEASON);
+          const { avg, paPerGame } = extractBattingAvgAndPA(battingStats);
+          const expectedRate = avg * paPerGame;
 
-      const overOutcome = outcomes.find(o => o.name === 'Over');
-      if (!overOutcome) continue;
+          const overOutcome = outcomes.find(o => o.name === 'Over');
+          if (!overOutcome) continue;
 
-      const prob = overProbabilityProp(overOutcome.point, expectedRate);
-      const implied = impliedProbability(overOutcome.price);
-      const edgeValue = edge(prob, implied);
-      if (!isSignal(prob, implied, threshold)) continue;
-      if (await signalAlreadySentToday(db, game.gamePk, 'player_prop', `${player.fullName} hits`)) continue;
+          const prob = overProbabilityProp(overOutcome.point, expectedRate);
+          const implied = impliedProbability(overOutcome.price);
+          const edgeValue = edge(prob, implied);
+          if (!isSignal(prob, implied, threshold)) continue;
+          if (await signalAlreadySentToday(db, game.gamePk, 'player_prop', `${player.fullName} hits`)) continue;
 
-      const reasoning = `AVG temporada ${avg.toFixed(3)} en ${paPerGame.toFixed(1)} PA/juego -> tasa esperada ${expectedRate.toFixed(2)} hits/juego vs línea ${overOutcome.point}.`;
-      const message = formatSignalMessage({
-        matchup: `${game.awayTeam} @ ${game.homeTeam}`,
-        market: 'Player Prop',
-        selection: `${player.fullName} Over ${overOutcome.point} hits`,
-        price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
-      });
+          const reasoning = `AVG temporada ${avg.toFixed(3)} en ${paPerGame.toFixed(1)} PA/juego -> tasa esperada ${expectedRate.toFixed(2)} hits/juego vs línea ${overOutcome.point}.`;
+          const message = formatSignalMessage({
+            matchup: `${game.awayTeam} @ ${game.homeTeam}`,
+            market: 'Player Prop',
+            selection: `${player.fullName} Over ${overOutcome.point} hits`,
+            price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
+          });
 
-      await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'player_prop', selection: `${player.fullName} hits`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
+          await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'player_prop', selection: `${player.fullName} hits`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
+        } catch (err) {
+          console.error(`Failed to process player prop for ${player.fullName} in game ${game.gamePk}:`, err);
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to fetch roster/props for game ${game.gamePk}:`, err);
     }
   }
 
