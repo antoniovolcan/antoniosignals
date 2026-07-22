@@ -1,8 +1,16 @@
 // scripts/backtest.js
 // Usage: node scripts/backtest.js 2026-06-01 2026-06-30
 // Reconstructs what the moneyline heuristic would have picked for each completed game
-// in the date range, using standings/ERA data as they existed then, and compares
-// against the actual final score. Prints direction accuracy — no ROI (no historical odds available).
+// in the date range, using pitcher ERA as it existed then (computed from each start's
+// game log), and compares against the actual final score. Prints direction accuracy —
+// no ROI (no historical odds available).
+//
+// KNOWN LIMITATION: last-10 team win% comes from the live standings endpoint, which
+// reflects each team's CURRENT record, not their record as of the historical date being
+// backtested. MLB's public StatsAPI has no "standings as of date X" endpoint, so this is
+// a form of data leakage (using future information) that inflates/distorts the reported
+// accuracy versus what the heuristic would have actually produced live. Treat the printed
+// percentage as optimistic/approximate, not a precise historical accuracy measurement.
 import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra } from '../lib/mlb.js';
 import { moneylineEstimate } from '../lib/signals.js';
 
@@ -32,12 +40,12 @@ async function fetchFinalScore(gamePk) {
 
 async function main() {
   const season = new Date(startDate).getFullYear();
+  const standingsRaw = await fetchStandings(season);
   let correct = 0;
   let total = 0;
 
   for (const date of dateRange(startDate, endDate)) {
     const games = parseScheduleGames(await fetchSchedule(date));
-    const standingsRaw = await fetchStandings(season);
 
     for (const game of games) {
       if (game.status !== 'final') continue;
