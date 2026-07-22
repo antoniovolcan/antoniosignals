@@ -23,9 +23,9 @@ export async function runScan() {
   const sentMessages = [];
 
   for (const game of games) {
-    if (game.status !== 'scheduled') continue;
-
     await upsertGame(db, { ...game, date: today });
+
+    if (game.status !== 'scheduled') continue;
 
     const oddsEvent = oddsEvents.find(
       e => e.homeTeam === game.homeTeam && e.awayTeam === game.awayTeam
@@ -64,9 +64,13 @@ export async function runScan() {
         price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
       });
 
-      await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, message);
-      await insertSignal(db, { gamePk: game.gamePk, market: 'moneyline', selection: team, price, impliedProb: implied, estimatedProb: prob, edge: edgeValue, reasoning });
-      sentMessages.push(message);
+      try {
+        await insertSignal(db, { gamePk: game.gamePk, market: 'moneyline', selection: team, price, impliedProb: implied, estimatedProb: prob, edge: edgeValue, reasoning });
+        await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, message);
+        sentMessages.push(message);
+      } catch (err) {
+        console.error(`Failed to record/send moneyline signal for game ${game.gamePk}, team ${team}:`, err);
+      }
     }
 
     const projectedTotal = projectedTotalRuns({
@@ -90,9 +94,13 @@ export async function runScan() {
         price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
       });
 
-      await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, message);
-      await insertSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edge: edgeValue, reasoning });
-      sentMessages.push(message);
+      try {
+        await insertSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edge: edgeValue, reasoning });
+        await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, message);
+        sentMessages.push(message);
+      } catch (err) {
+        console.error(`Failed to record/send totals signal for game ${game.gamePk}, selection ${side} ${line.point}:`, err);
+      }
     }
   }
 
