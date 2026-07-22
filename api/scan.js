@@ -146,6 +146,10 @@ export async function runScan() {
 }
 
 export default async function handler(req, res) {
+  if (req.query?.secret !== process.env.CRON_SECRET) {
+    res.status(401).json({ error: 'unauthorized' });
+    return;
+  }
   try {
     const result = await runScan();
     res.status(200).json(result);
