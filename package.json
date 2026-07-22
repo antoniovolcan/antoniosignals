@@ -1,0 +1,12 @@
+{
+  "name": "mlb-telegram-signals",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test lib/**/*.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}
