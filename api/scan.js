@@ -1,6 +1,6 @@
 // api/scan.js
 import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue } from '../lib/db.js';
-import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA } from '../lib/mlb.js';
+import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes } from '../lib/odds.js';
 import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage } from '../lib/signals.js';
 import { sendTelegramMessage } from '../lib/telegram.js';
@@ -47,10 +47,14 @@ export async function runScan() {
 
     const homePitcherId = game.homeProbablePitcherId;
     const awayPitcherId = game.awayProbablePitcherId;
-    const [homeEra, awayEra] = await Promise.all([
-      homePitcherId ? computeRecentEra(await fetchPitcherGameLog(homePitcherId, SEASON)) : Promise.resolve(4.00),
-      awayPitcherId ? computeRecentEra(await fetchPitcherGameLog(awayPitcherId, SEASON)) : Promise.resolve(4.00),
+    const [homeGameLog, awayGameLog] = await Promise.all([
+      homePitcherId ? fetchPitcherGameLog(homePitcherId, SEASON) : Promise.resolve(null),
+      awayPitcherId ? fetchPitcherGameLog(awayPitcherId, SEASON) : Promise.resolve(null),
     ]);
+    const homeEra = homeGameLog ? computeRecentEra(homeGameLog) : 4.00;
+    const awayEra = awayGameLog ? computeRecentEra(awayGameLog) : 4.00;
+    const homePitcherName = (homeGameLog && extractPitcherName(homeGameLog)) || 'abridor no confirmado';
+    const awayPitcherName = (awayGameLog && extractPitcherName(awayGameLog)) || 'abridor no confirmado';
 
     const homeWinProb = moneylineEstimate({
       home: { last10WinPct: homeLast10, startingPitcherEra: homeEra },
@@ -66,7 +70,7 @@ export async function runScan() {
       if (!isSignal(prob, implied, threshold)) continue;
       if (await signalAlreadySentToday(db, game.gamePk, 'moneyline', team)) continue;
 
-      const reasoning = `ERA reciente: ${game.homeTeam} ${homeEra.toFixed(2)} / ${game.awayTeam} ${awayEra.toFixed(2)}. Últimos 10: ${game.homeTeam} ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)}, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}.`;
+      const reasoning = `Abridor ${game.homeTeam}: ${homePitcherName} (ERA ${homeEra.toFixed(2)} en últimos 5 arranques). Abridor ${game.awayTeam}: ${awayPitcherName} (ERA ${awayEra.toFixed(2)}). Últimos 10 juegos: ${game.homeTeam} ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)}, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}.`;
       const message = formatSignalMessage({
         matchup: `${game.awayTeam} @ ${game.homeTeam}`,
         market: 'Moneyline',
@@ -90,7 +94,7 @@ export async function runScan() {
       if (!isSignal(prob, implied, threshold)) continue;
       if (await signalAlreadySentToday(db, game.gamePk, 'totals', side)) continue;
 
-      const reasoning = `Proyección de carreras: ${projectedTotal.toFixed(1)} vs línea ${line.point}. ERA recientes: ${homeEra.toFixed(2)} / ${awayEra.toFixed(2)}.`;
+      const reasoning = `Proyección de carreras: ${projectedTotal.toFixed(1)} vs línea ${line.point}. Abridores: ${game.homeTeam} ${homePitcherName} (ERA ${homeEra.toFixed(2)}), ${game.awayTeam} ${awayPitcherName} (ERA ${awayEra.toFixed(2)}).`;
       const message = formatSignalMessage({
         matchup: `${game.awayTeam} @ ${game.homeTeam}`,
         market: 'Totals',
