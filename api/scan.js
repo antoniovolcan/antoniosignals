@@ -1,8 +1,8 @@
 // api/scan.js
 import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue } from '../lib/db.js';
-import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA } from '../lib/mlb.js';
+import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, fetchTeamHittingVsHand, extractTeamStrikeoutRate } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes } from '../lib/odds.js';
-import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage } from '../lib/signals.js';
+import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage, expectedPitcherStrikeouts } from '../lib/signals.js';
 import { sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
@@ -108,7 +108,7 @@ export async function runScan() {
     try {
       const rosterRaw = await fetchTeamRoster(game.homeTeamId);
       const roster = parseRoster(rosterRaw);
-      const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'batter_hits');
+      const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'batter_hits,pitcher_strikeouts');
 
       for (const player of roster.slice(0, 5)) {
         try {
@@ -139,6 +139,51 @@ export async function runScan() {
           await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'player_prop', selection: `${player.fullName} hits`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
         } catch (err) {
           console.error(`Failed to process player prop for ${player.fullName} in game ${game.gamePk}:`, err);
+        }
+      }
+
+      const pitcherCandidates = [
+        { pitcherId: homePitcherId, pitcherName: homePitcherName, opposingTeamId: game.awayTeamId },
+        { pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingTeamId: game.homeTeamId },
+      ];
+
+      for (const { pitcherId, pitcherName, opposingTeamId } of pitcherCandidates) {
+        if (!pitcherId) continue;
+        try {
+          const outcomes = parsePlayerPropOutcomes(propEventOdds, 'pitcher_strikeouts', pitcherName);
+          if (outcomes.length === 0) continue;
+
+          const overOutcome = outcomes.find(o => o.name === 'Over');
+          if (!overOutcome) continue;
+
+          const [seasonStatsRaw, personInfoRaw] = await Promise.all([
+            fetchPitcherSeasonStats(pitcherId, SEASON),
+            fetchPersonInfo(pitcherId),
+          ]);
+          const pitcherK9 = extractStrikeoutsPer9(seasonStatsRaw);
+          const pitchHand = extractPitchHand(personInfoRaw);
+          const teamHittingRaw = await fetchTeamHittingVsHand(opposingTeamId, pitchHand, SEASON);
+          const teamStrikeoutRate = extractTeamStrikeoutRate(teamHittingRaw);
+
+          const expectedK = expectedPitcherStrikeouts({ pitcherK9, teamStrikeoutRate });
+          const prob = overProbabilityProp(overOutcome.point, expectedK);
+          const implied = impliedProbability(overOutcome.price);
+          const edgeValue = edge(prob, implied);
+          if (!isSignal(prob, implied, threshold)) continue;
+          if (await signalAlreadySentToday(db, game.gamePk, 'pitcher_strikeouts', `${pitcherName} Ks`)) continue;
+
+          const handLabel = pitchHand === 'L' ? 'zurdo' : pitchHand === 'R' ? 'derecho' : 'mano no confirmada';
+          const reasoning = `${pitcherName} (${handLabel}) tiene ${pitcherK9.toFixed(2)} K/9 en la temporada. El rival poncha a una tasa de ${(teamStrikeoutRate * 100).toFixed(1)}% contra ${handLabel === 'zurdo' ? 'zurdos' : handLabel === 'derecho' ? 'derechos' : 'esa mano'} -> proyección de ${expectedK.toFixed(1)} ponches vs línea ${overOutcome.point}.`;
+          const message = formatSignalMessage({
+            matchup: `${game.awayTeam} @ ${game.homeTeam}`,
+            market: 'Pitcher Strikeouts',
+            selection: `${pitcherName} Over ${overOutcome.point} Ks`,
+            price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
+          });
+
+          await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'pitcher_strikeouts', selection: `${pitcherName} Ks`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
+        } catch (err) {
+          console.error(`Failed to process pitcher strikeout prop for ${pitcherName} in game ${game.gamePk}:`, err);
         }
       }
     } catch (err) {
