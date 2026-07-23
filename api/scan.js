@@ -147,14 +147,17 @@ export async function runScan() {
         { pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingTeamId: game.homeTeamId },
       ];
 
-      for (const { pitcherId, pitcherName, opposingTeamId } of pitcherCandidates) {
-        if (!pitcherId) continue;
+      const HAND_LABEL = { L: 'zurdo', R: 'derecho' };
+      const HAND_LABEL_PLURAL = { L: 'zurdos', R: 'derechos' };
+
+      await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingTeamId }) => {
+        if (!pitcherId) return;
         try {
           const outcomes = parsePlayerPropOutcomes(propEventOdds, 'pitcher_strikeouts', pitcherName);
-          if (outcomes.length === 0) continue;
+          if (outcomes.length === 0) return;
 
           const overOutcome = outcomes.find(o => o.name === 'Over');
-          if (!overOutcome) continue;
+          if (!overOutcome) return;
 
           const [seasonStatsRaw, personInfoRaw] = await Promise.all([
             fetchPitcherSeasonStats(pitcherId, SEASON),
@@ -169,11 +172,12 @@ export async function runScan() {
           const prob = overProbabilityProp(overOutcome.point, expectedK);
           const implied = impliedProbability(overOutcome.price);
           const edgeValue = edge(prob, implied);
-          if (!isSignal(prob, implied, threshold)) continue;
-          if (await signalAlreadySentToday(db, game.gamePk, 'pitcher_strikeouts', `${pitcherName} Ks`)) continue;
+          if (!isSignal(prob, implied, threshold)) return;
+          if (await signalAlreadySentToday(db, game.gamePk, 'pitcher_strikeouts', `${pitcherName} Ks`)) return;
 
-          const handLabel = pitchHand === 'L' ? 'zurdo' : pitchHand === 'R' ? 'derecho' : 'mano no confirmada';
-          const reasoning = `${pitcherName} (${handLabel}) tiene ${pitcherK9.toFixed(2)} K/9 en la temporada. El rival poncha a una tasa de ${(teamStrikeoutRate * 100).toFixed(1)}% contra ${handLabel === 'zurdo' ? 'zurdos' : handLabel === 'derecho' ? 'derechos' : 'esa mano'} -> proyección de ${expectedK.toFixed(1)} ponches vs línea ${overOutcome.point}.`;
+          const handLabel = HAND_LABEL[pitchHand] || 'mano no confirmada';
+          const handLabelPlural = HAND_LABEL_PLURAL[pitchHand] || 'esa mano';
+          const reasoning = `${pitcherName} (${handLabel}) tiene ${pitcherK9.toFixed(2)} K/9 en la temporada. El rival poncha a una tasa de ${(teamStrikeoutRate * 100).toFixed(1)}% contra ${handLabelPlural} -> proyección de ${expectedK.toFixed(1)} ponches vs línea ${overOutcome.point}.`;
           const message = formatSignalMessage({
             matchup: `${game.awayTeam} @ ${game.homeTeam}`,
             market: 'Pitcher Strikeouts',
@@ -185,7 +189,7 @@ export async function runScan() {
         } catch (err) {
           console.error(`Failed to process pitcher strikeout prop for ${pitcherName} in game ${game.gamePk}:`, err);
         }
-      }
+      }));
     } catch (err) {
       console.error(`Failed to fetch roster/props for game ${game.gamePk}:`, err);
     }
