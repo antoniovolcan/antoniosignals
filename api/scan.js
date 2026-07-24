@@ -1,5 +1,5 @@
 // api/scan.js
-import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue } from '../lib/db.js';
+import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned } from '../lib/db.js';
 import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, fetchTeamHittingVsHand, extractTeamStrikeoutRate } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes } from '../lib/odds.js';
 import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage, expectedPitcherStrikeouts } from '../lib/signals.js';
@@ -36,6 +36,8 @@ export async function runScan() {
     await upsertGame(db, { ...game, date: today });
 
     if (game.status !== 'scheduled') continue;
+
+    if (await gameAlreadyScannedToday(db, game.gamePk)) continue;
 
     const oddsEvent = oddsEvents.find(
       e => e.homeTeam === game.homeTeam && e.awayTeam === game.awayTeam
@@ -193,6 +195,8 @@ export async function runScan() {
     } catch (err) {
       console.error(`Failed to fetch roster/props for game ${game.gamePk}:`, err);
     }
+
+    await markGameScanned(db, game.gamePk);
   }
 
   return { scanned: games.length, signalsSent: sentMessages.length };

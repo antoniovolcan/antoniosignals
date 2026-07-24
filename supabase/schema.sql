@@ -4,7 +4,8 @@ create table games (
   home_team text not null,
   away_team text not null,
   status text not null default 'scheduled',
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  last_scanned_at timestamptz
 );
 
 create table team_map (
