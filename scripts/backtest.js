@@ -11,7 +11,7 @@
 // a form of data leakage (using future information) that inflates/distorts the reported
 // accuracy versus what the heuristic would have actually produced live. Treat the printed
 // percentage as optimistic/approximate, not a precise historical accuracy measurement.
-import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra } from '../lib/mlb.js';
+import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, fetchGameLinescore, extractFinalScore } from '../lib/mlb.js';
 import { moneylineEstimate } from '../lib/signals.js';
 
 const [, , startDate, endDate] = process.argv;
@@ -31,13 +31,6 @@ function dateRange(start, end) {
   return dates;
 }
 
-async function fetchFinalScore(gamePk) {
-  const res = await fetch(`https://statsapi.mlb.com/api/v1/game/${gamePk}/linescore`);
-  if (!res.ok) return null;
-  const data = await res.json();
-  return { home: data.teams?.home?.runs, away: data.teams?.away?.runs };
-}
-
 async function main() {
   const season = new Date(startDate).getFullYear();
   const standingsRaw = await fetchStandings(season);
@@ -49,8 +42,9 @@ async function main() {
 
     for (const game of games) {
       if (game.status !== 'final') continue;
-      const score = await fetchFinalScore(game.gamePk);
-      if (!score || score.home == null || score.away == null) continue;
+      const linescoreRaw = await fetchGameLinescore(game.gamePk);
+      const score = extractFinalScore(linescoreRaw);
+      if (!score) continue;
 
       const homeLast10 = parseLastTenRecord(standingsRaw, game.homeTeamId);
       const awayLast10 = parseLastTenRecord(standingsRaw, game.awayTeamId);
