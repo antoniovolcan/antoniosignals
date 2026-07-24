@@ -73,7 +73,7 @@ export async function runScan() {
       if (!isSignal(prob, implied, threshold)) continue;
       if (await signalAlreadySentToday(db, game.gamePk, 'moneyline', team)) continue;
 
-      const reasoning = `Abridor ${game.homeTeam}: ${homePitcherName} (ERA ${homeEra.toFixed(2)} en últimos 5 arranques). Abridor ${game.awayTeam}: ${awayPitcherName} (ERA ${awayEra.toFixed(2)}). Últimos 10 juegos: ${game.homeTeam} ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)}, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}.`;
+      const reasoning = `El modelo compara el nivel de pitcheo reciente y el momento de cada equipo. Abridor de ${game.homeTeam}: ${homePitcherName}, con ERA de ${homeEra.toFixed(2)} en sus últimos 5 arranques (mientras más bajo, mejor viene lanzando). Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de ${awayEra.toFixed(2)}. Forma reciente: ${game.homeTeam} lleva ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)} en sus últimos 10 juegos, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}. Con estos datos, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.`;
       const message = formatSignalMessage({
         matchup: `${game.awayTeam} @ ${game.homeTeam}`,
         market: 'Moneyline',
@@ -97,7 +97,7 @@ export async function runScan() {
       if (!isSignal(prob, implied, threshold)) continue;
       if (await signalAlreadySentToday(db, game.gamePk, 'totals', side)) continue;
 
-      const reasoning = `Proyección de carreras: ${projectedTotal.toFixed(1)} vs línea ${line.point}. Abridores: ${game.homeTeam} ${homePitcherName} (ERA ${homeEra.toFixed(2)}), ${game.awayTeam} ${awayPitcherName} (ERA ${awayEra.toFixed(2)}).`;
+      const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego, calculado a partir del ERA reciente de los abridores (${game.homeTeam}: ${homePitcherName}, ERA ${homeEra.toFixed(2)}; ${game.awayTeam}: ${awayPitcherName}, ERA ${awayEra.toFixed(2)} — mientras más bajo el ERA, menos carreras se espera que permita ese pitcher). La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
       const message = formatSignalMessage({
         matchup: `${game.awayTeam} @ ${game.homeTeam}`,
         market: 'Totals',
@@ -135,7 +135,7 @@ export async function runScan() {
           if (!isSignal(prob, implied, threshold)) continue;
           if (await signalAlreadySentToday(db, game.gamePk, 'player_prop', `${player.fullName} hits`)) continue;
 
-          const reasoning = `AVG temporada ${avg.toFixed(3)} en ${paPerGame.toFixed(1)} PA/juego -> tasa esperada ${expectedRate.toFixed(2)} hits/juego vs línea ${overOutcome.point}.`;
+          const reasoning = `${player.fullName} batea para ${avg.toFixed(3)} de promedio esta temporada y suele tener ${paPerGame.toFixed(1)} turnos al bate por juego, lo que da una tasa esperada de ${expectedRate.toFixed(2)} hits por juego. La casa puso la línea en ${overOutcome.point} hits — como la tasa esperada del modelo supera esa línea, ve valor en el Over.`;
           const message = formatSignalMessage({
             matchup: `${game.awayTeam} @ ${game.homeTeam}`,
             market: 'Player Prop',
@@ -193,7 +193,7 @@ export async function runScan() {
 
           const handLabel = HAND_LABEL[pitchHand] || 'mano no confirmada';
           const handLabelPlural = HAND_LABEL_PLURAL[pitchHand] || 'esa mano';
-          const reasoning = `${pitcherName} (${handLabel}) tiene ${pitcherK9.toFixed(2)} K/9 en la temporada. El rival poncha a una tasa de ${(teamStrikeoutRate * 100).toFixed(1)}% contra ${handLabelPlural} -> proyección de ${expectedK.toFixed(1)} ponches vs línea ${overOutcome.point}.`;
+          const reasoning = `${pitcherName} es ${handLabel} y tiene ${pitcherK9.toFixed(2)} ponches por cada 9 innings esta temporada. Evaluamos a los bateadores del roster rival contra pitchers ${handLabelPlural} y en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (el promedio de liga es ${(0.223 * 100).toFixed(1)}%). Combinando ambos factores, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
           const message = formatSignalMessage({
             matchup: `${game.awayTeam} @ ${game.homeTeam}`,
             market: 'Pitcher Strikeouts',
