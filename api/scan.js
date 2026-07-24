@@ -1,6 +1,6 @@
 // api/scan.js
 import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned } from '../lib/db.js';
-import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, fetchTeamHittingVsHand, extractTeamStrikeoutRate } from '../lib/mlb.js';
+import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, fetchTeamHittingVsHand, extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes } from '../lib/odds.js';
 import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage, expectedPitcherStrikeouts } from '../lib/signals.js';
 import { sendTelegramMessage } from '../lib/telegram.js';
@@ -109,8 +109,12 @@ export async function runScan() {
     }
 
     try {
-      const rosterRaw = await fetchTeamRoster(game.homeTeamId);
+      const [rosterRaw, awayRosterRaw] = await Promise.all([
+        fetchTeamRoster(game.homeTeamId),
+        fetchTeamRoster(game.awayTeamId),
+      ]);
       const roster = parseRoster(rosterRaw);
+      const awayRoster = parseRoster(awayRosterRaw);
       const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'batter_hits,pitcher_strikeouts');
 
       for (const player of roster.slice(0, 5)) {
@@ -146,14 +150,14 @@ export async function runScan() {
       }
 
       const pitcherCandidates = [
-        { pitcherId: homePitcherId, pitcherName: homePitcherName, opposingTeamId: game.awayTeamId },
-        { pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingTeamId: game.homeTeamId },
+        { pitcherId: homePitcherId, pitcherName: homePitcherName, opposingRoster: awayRoster },
+        { pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingRoster: roster },
       ];
 
       const HAND_LABEL = { L: 'zurdo', R: 'derecho' };
       const HAND_LABEL_PLURAL = { L: 'zurdos', R: 'derechos' };
 
-      await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingTeamId }) => {
+      await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingRoster }) => {
         if (!pitcherId) return;
         try {
           const outcomes = parsePlayerPropOutcomes(propEventOdds, 'pitcher_strikeouts', pitcherName);
@@ -168,8 +172,17 @@ export async function runScan() {
           ]);
           const pitcherK9 = extractStrikeoutsPer9(seasonStatsRaw);
           const pitchHand = extractPitchHand(personInfoRaw);
-          const teamHittingRaw = await fetchTeamHittingVsHand(opposingTeamId, pitchHand, SEASON);
-          const teamStrikeoutRate = extractTeamStrikeoutRate(teamHittingRaw);
+          const batterRates = await Promise.all(
+            opposingRoster.slice(0, 5).map(async (batter) => {
+              try {
+                const raw = await fetchBatterHittingVsHand(batter.personId, pitchHand, SEASON);
+                return extractTeamStrikeoutRate(raw);
+              } catch (err) {
+                return null;
+              }
+            })
+          );
+          const teamStrikeoutRate = computeAverageStrikeoutRate(batterRates);
 
           const expectedK = expectedPitcherStrikeouts({ pitcherK9, teamStrikeoutRate });
           const prob = overProbabilityProp(overOutcome.point, expectedK);
