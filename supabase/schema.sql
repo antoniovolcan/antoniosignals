@@ -29,7 +29,12 @@ create table signals (
   estimated_prob numeric not null,
   edge numeric not null,
   reasoning text not null,
-  sent_at timestamptz not null default now()
+  sent_at timestamptz not null default now(),
+  line numeric,
+  subject_id bigint,
+  hit boolean,
+  actual_value text,
+  graded_at timestamptz
 );
 
 create table results (
