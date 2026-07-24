@@ -39,6 +39,7 @@ export async function runScan() {
 
     if (await gameAlreadyScannedToday(db, game.gamePk)) continue;
 
+    try {
     const oddsEvent = oddsEvents.find(
       e => e.homeTeam === game.homeTeam && e.awayTeam === game.awayTeam
     );
@@ -197,6 +198,9 @@ export async function runScan() {
     }
 
     await markGameScanned(db, game.gamePk);
+    } catch (err) {
+      console.error(`Failed to process game ${game.gamePk} (${game.awayTeam} @ ${game.homeTeam}):`, err);
+    }
   }
 
   return { scanned: games.length, signalsSent: sentMessages.length };
