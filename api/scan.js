@@ -1,8 +1,8 @@
 // api/scan.js
 import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned } from '../lib/db.js';
-import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate } from '../lib/mlb.js';
+import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate, fetchTeamSeasonHitting, extractRunsPerGame } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes } from '../lib/odds.js';
-import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage, expectedPitcherStrikeouts } from '../lib/signals.js';
+import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage, expectedPitcherStrikeouts, blendEraEstimates } from '../lib/signals.js';
 import { sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
@@ -50,12 +50,20 @@ export async function runScan() {
 
     const homePitcherId = game.homeProbablePitcherId;
     const awayPitcherId = game.awayProbablePitcherId;
-    const [homeGameLog, awayGameLog] = await Promise.all([
+    const [homeGameLog, awayGameLog, homeHittingRaw, awayHittingRaw] = await Promise.all([
       homePitcherId ? fetchPitcherGameLog(homePitcherId, SEASON) : Promise.resolve(null),
       awayPitcherId ? fetchPitcherGameLog(awayPitcherId, SEASON) : Promise.resolve(null),
+      fetchTeamSeasonHitting(game.homeTeamId, SEASON),
+      fetchTeamSeasonHitting(game.awayTeamId, SEASON),
     ]);
     const homeEra = homeGameLog ? computeRecentEra(homeGameLog) : 4.00;
     const awayEra = awayGameLog ? computeRecentEra(awayGameLog) : 4.00;
+    const homeSeasonEra = homeGameLog ? computeSeasonEra(homeGameLog) : 4.00;
+    const awaySeasonEra = awayGameLog ? computeSeasonEra(awayGameLog) : 4.00;
+    const homeBlendedEra = blendEraEstimates(homeEra, homeSeasonEra);
+    const awayBlendedEra = blendEraEstimates(awayEra, awaySeasonEra);
+    const homeRunsPerGame = extractRunsPerGame(homeHittingRaw);
+    const awayRunsPerGame = extractRunsPerGame(awayHittingRaw);
     const homePitcherName = (homeGameLog && extractPitcherName(homeGameLog)) || 'abridor no confirmado';
     const awayPitcherName = (awayGameLog && extractPitcherName(awayGameLog)) || 'abridor no confirmado';
 
@@ -85,8 +93,8 @@ export async function runScan() {
     }
 
     const projectedTotal = projectedTotalRuns({
-      home: { runsPerGame: 4.5, startingPitcherEra: homeEra },
-      away: { runsPerGame: 4.5, startingPitcherEra: awayEra },
+      home: { runsPerGame: homeRunsPerGame, startingPitcherEra: homeBlendedEra },
+      away: { runsPerGame: awayRunsPerGame, startingPitcherEra: awayBlendedEra },
     });
     for (const side of ['Over', 'Under']) {
       const line = findTotalsLine(oddsEvent.totals, side);
@@ -97,7 +105,7 @@ export async function runScan() {
       if (!isSignal(prob, implied, threshold)) continue;
       if (await signalAlreadySentToday(db, game.gamePk, 'totals', side)) continue;
 
-      const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego, calculado a partir del ERA reciente de los abridores (${game.homeTeam}: ${homePitcherName}, ERA ${homeEra.toFixed(2)}; ${game.awayTeam}: ${awayPitcherName}, ERA ${awayEra.toFixed(2)} — mientras más bajo el ERA, menos carreras se espera que permita ese pitcher). La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
+      const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Esto combina el ERA de cada abridor esta temporada con su ERA en sus últimos 5 arranques (${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)} y reciente ${homeEra.toFixed(2)}; ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)} y reciente ${awayEra.toFixed(2)}) junto con el promedio real de carreras anotadas por partido de cada ofensiva esta temporada (${game.homeTeam}: ${homeRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayRunsPerGame.toFixed(2)}). La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
       const message = formatSignalMessage({
         matchup: `${game.awayTeam} @ ${game.homeTeam}`,
         market: 'Totals',
