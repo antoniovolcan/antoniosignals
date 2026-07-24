@@ -7,9 +7,9 @@ import { sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
 
-async function recordAndSendSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edgeValue, reasoning, message, sentMessages }) {
+async function recordAndSendSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edgeValue, reasoning, message, sentMessages, line, subjectId }) {
   try {
-    await insertSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edge: edgeValue, reasoning });
+    await insertSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edge: edgeValue, reasoning, line, subjectId });
     await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, message);
     sentMessages.push(message);
   } catch (err) {
@@ -105,7 +105,7 @@ export async function runScan() {
         price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
       });
 
-      await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
+      await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: line.point });
     }
 
     try {
@@ -143,7 +143,7 @@ export async function runScan() {
             price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
           });
 
-          await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'player_prop', selection: `${player.fullName} hits`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
+          await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'player_prop', selection: `${player.fullName} hits`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: overOutcome.point, subjectId: player.personId });
         } catch (err) {
           console.error(`Failed to process player prop for ${player.fullName} in game ${game.gamePk}:`, err);
         }
@@ -201,7 +201,7 @@ export async function runScan() {
             price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
           });
 
-          await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'pitcher_strikeouts', selection: `${pitcherName} Ks`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
+          await recordAndSendSignal(db, { gamePk: game.gamePk, market: 'pitcher_strikeouts', selection: `${pitcherName} Ks`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: overOutcome.point, subjectId: pitcherId });
         } catch (err) {
           console.error(`Failed to process pitcher strikeout prop for ${pitcherName} in game ${game.gamePk}:`, err);
         }
