@@ -1,6 +1,6 @@
 // api/scan.js
 import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned } from '../lib/db.js';
-import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate, fetchTeamSeasonHitting, extractRunsPerGame } from '../lib/mlb.js';
+import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate, fetchTeamSeasonHitting, extractRunsPerGame, extractInningsPerStart, computeRecentStrikeoutsPer9 } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes } from '../lib/odds.js';
 import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage, expectedPitcherStrikeouts, blendEraEstimates } from '../lib/signals.js';
 import { sendTelegramDocument } from '../lib/telegram.js';
@@ -157,14 +157,14 @@ export async function runScan() {
       }
 
       const pitcherCandidates = [
-        { pitcherId: homePitcherId, pitcherName: homePitcherName, opposingRoster: awayRoster },
-        { pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingRoster: roster },
+        { pitcherId: homePitcherId, pitcherName: homePitcherName, opposingRoster: awayRoster, gameLog: homeGameLog },
+        { pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingRoster: roster, gameLog: awayGameLog },
       ];
 
       const HAND_LABEL = { L: 'zurdo', R: 'derecho' };
       const HAND_LABEL_PLURAL = { L: 'zurdos', R: 'derechos' };
 
-      await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingRoster }) => {
+      await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingRoster, gameLog }) => {
         if (!pitcherId) return;
         try {
           const outcomes = parsePlayerPropOutcomes(propEventOdds, 'pitcher_strikeouts', pitcherName);
@@ -177,7 +177,10 @@ export async function runScan() {
             fetchPitcherSeasonStats(pitcherId, SEASON),
             fetchPersonInfo(pitcherId),
           ]);
-          const pitcherK9 = extractStrikeoutsPer9(seasonStatsRaw);
+          const seasonK9 = extractStrikeoutsPer9(seasonStatsRaw);
+          const recentK9 = gameLog ? computeRecentStrikeoutsPer9(gameLog) : seasonK9;
+          const pitcherK9 = blendEraEstimates(recentK9, seasonK9);
+          const pitcherInningsPerStart = extractInningsPerStart(seasonStatsRaw);
           const pitchHand = extractPitchHand(personInfoRaw);
           const batterRates = await Promise.all(
             opposingRoster.slice(0, 5).map(async (batter) => {
@@ -191,7 +194,7 @@ export async function runScan() {
           );
           const teamStrikeoutRate = computeAverageStrikeoutRate(batterRates);
 
-          const expectedK = expectedPitcherStrikeouts({ pitcherK9, teamStrikeoutRate });
+          const expectedK = expectedPitcherStrikeouts({ pitcherK9, teamStrikeoutRate, expectedInnings: pitcherInningsPerStart });
           const prob = overProbabilityProp(overOutcome.point, expectedK);
           const implied = impliedProbability(overOutcome.price);
           const edgeValue = edge(prob, implied);
@@ -200,7 +203,7 @@ export async function runScan() {
 
           const handLabel = HAND_LABEL[pitchHand] || 'mano no confirmada';
           const handLabelPlural = HAND_LABEL_PLURAL[pitchHand] || 'esa mano';
-          const reasoning = `${pitcherName} es ${handLabel} y tiene ${pitcherK9.toFixed(2)} ponches por cada 9 innings esta temporada. Evaluamos a los bateadores del roster rival contra pitchers ${handLabelPlural} y en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (el promedio de liga es ${(0.223 * 100).toFixed(1)}%). Combinando ambos factores, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
+          const reasoning = `${pitcherName} es ${handLabel} y tiene ${seasonK9.toFixed(2)} ponches por cada 9 innings esta temporada (${recentK9.toFixed(2)} en sus últimos 5 arranques). Se espera que lance unas ${pitcherInningsPerStart.toFixed(1)} innings, su promedio real por arranque esta temporada. Evaluamos a los bateadores del roster rival contra pitchers ${handLabelPlural} y en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (el promedio de liga es ${(0.223 * 100).toFixed(1)}%). Combinando todo esto, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
           const message = formatSignalMessage({
             matchup: `${game.awayTeam} @ ${game.homeTeam}`,
             market: 'Pitcher Strikeouts',
