@@ -10,13 +10,16 @@ import {
   extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate,
   fetchTeamSeasonHitting, fetchTeamRecentHitting, extractRunsPerGame, extractOpsFromHittingStats,
   fetchTeamRecentSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
+  fetchGameFeed, extractWeather, extractPowerContactProfile,
 } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes } from '../lib/odds.js';
 import {
   moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp,
   impliedProbability, edge, isSignal, formatSignalMessage,
   expectedPitcherStrikeouts, blendEraEstimates, computeOffensiveFactor,
+  computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
 } from '../lib/signals.js';
+import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
 import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
@@ -213,6 +216,16 @@ export async function runScan() {
       try {
         const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'batter_hits,pitcher_strikeouts');
 
+        let weather = { tempF: null, windMph: 0, windDirection: '', condition: null };
+        try {
+          const feedRaw = await fetchGameFeed(game.gamePk);
+          weather = extractWeather(feedRaw);
+        } catch (err) {
+          console.error(`Failed to fetch weather for game ${game.gamePk}:`, err);
+        }
+        const weatherFactor = computeWeatherFactorForStrikeouts(weather);
+        const parkFactor = getStrikeoutParkFactor(game.homeTeam);
+
         for (const player of roster.slice(0, 5)) {
           try {
             const outcomes = parsePlayerPropOutcomes(propEventOdds, 'batter_hits', player.fullName);
@@ -246,14 +259,20 @@ export async function runScan() {
         }
 
         const pitcherCandidates = [
-          { pitcherId: homePitcherId, pitcherName: homePitcherName, opposingRoster: awayRoster, gameLog: homeGameLog, pitchHand: homePitchHand },
-          { pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingRoster: roster, gameLog: awayGameLog, pitchHand: awayPitchHand },
+          {
+            pitcherId: homePitcherId, pitcherName: homePitcherName, opposingRoster: awayRoster, gameLog: homeGameLog, pitchHand: homePitchHand,
+            ownEra: homeBlendedEra, opposingOffensiveFactor: awayOffensiveFactor, opposingRecentHittingRaw: awayRecentHittingRaw, opposingTeamName: game.awayTeam,
+          },
+          {
+            pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingRoster: roster, gameLog: awayGameLog, pitchHand: awayPitchHand,
+            ownEra: awayBlendedEra, opposingOffensiveFactor: homeOffensiveFactor, opposingRecentHittingRaw: homeRecentHittingRaw, opposingTeamName: game.homeTeam,
+          },
         ];
 
         const HAND_LABEL = { L: 'zurdo', R: 'derecho' };
         const HAND_LABEL_PLURAL = { L: 'zurdos', R: 'derechos' };
 
-        await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingRoster, gameLog, pitchHand }) => {
+        await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingRoster, gameLog, pitchHand, ownEra, opposingOffensiveFactor, opposingRecentHittingRaw, opposingTeamName }) => {
           if (!pitcherId) return;
           try {
             const outcomes = parsePlayerPropOutcomes(propEventOdds, 'pitcher_strikeouts', pitcherName);
@@ -267,19 +286,29 @@ export async function runScan() {
             const recentK9 = gameLog ? computeRecentStrikeoutsPer9(gameLog) : seasonK9;
             const pitcherK9 = blendEraEstimates(recentK9, seasonK9);
             const pitcherInningsPerStart = extractInningsPerStart(seasonStatsRaw);
-            const batterRates = await Promise.all(
+            const batterVsHandRaws = await Promise.all(
               opposingRoster.slice(0, 5).map(async (batter) => {
                 try {
-                  const raw = await fetchBatterHittingVsHand(batter.personId, pitchHand, SEASON);
-                  return extractTeamStrikeoutRate(raw);
+                  return await fetchBatterHittingVsHand(batter.personId, pitchHand, SEASON);
                 } catch (err) {
                   return null;
                 }
               })
             );
+            const batterRates = batterVsHandRaws.map(raw => raw ? extractTeamStrikeoutRate(raw) : null);
             const teamStrikeoutRate = computeAverageStrikeoutRate(batterRates);
+            const powerContactProfiles = batterVsHandRaws.map(raw => raw ? extractPowerContactProfile(raw) : null);
+            const powerContactFactor = computeAveragePowerContactFactor(powerContactProfiles);
 
-            const expectedK = expectedPitcherStrikeouts({ pitcherK9, teamStrikeoutRate, expectedInnings: pitcherInningsPerStart });
+            const recentOverallKRate = extractTeamStrikeoutRate(opposingRecentHittingRaw);
+            const blendedTeamStrikeoutRate = blendEraEstimates(teamStrikeoutRate, recentOverallKRate, 0.7);
+
+            const adjustedInnings = adjustedInningsForEarlyHookRisk({ baseInnings: pitcherInningsPerStart, pitcherEra: ownEra, opposingOffensiveFactor });
+
+            const expectedK = expectedPitcherStrikeouts({
+              pitcherK9, teamStrikeoutRate: blendedTeamStrikeoutRate, expectedInnings: adjustedInnings,
+              powerContactFactor, parkFactor, weatherFactor,
+            });
             const prob = overProbabilityProp(overOutcome.point, expectedK);
             const implied = impliedProbability(overOutcome.price);
             const edgeValue = edge(prob, implied);
@@ -288,7 +317,13 @@ export async function runScan() {
 
             const handLabel = HAND_LABEL[pitchHand] || 'mano no confirmada';
             const handLabelPlural = HAND_LABEL_PLURAL[pitchHand] || 'esa mano';
-            const reasoning = `${pitcherName} es ${handLabel} y tiene ${seasonK9.toFixed(2)} ponches por cada 9 innings esta temporada (${recentK9.toFixed(2)} en sus últimos 5 arranques). Se espera que lance unas ${pitcherInningsPerStart.toFixed(1)} innings, su promedio real por arranque esta temporada. Evaluamos a los bateadores del último lineup usado por el rival contra pitchers ${handLabelPlural} y en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (el promedio de liga es ${(0.223 * 100).toFixed(1)}%). Combinando todo esto, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
+            const inningsNote = adjustedInnings < pitcherInningsPerStart - 0.05
+              ? ` Como ${pitcherName} tiene un ERA de ${ownEra.toFixed(2)} (por encima del promedio) y enfrenta una ofensiva por encima del promedio, el modelo reduce sus innings esperados de ${pitcherInningsPerStart.toFixed(1)} a ${adjustedInnings.toFixed(1)} por el riesgo de que lo saquen temprano si le anotan varias carreras.`
+              : '';
+            const weatherNote = weather.tempF != null
+              ? ` Clima: ${weather.tempF}°F${weather.windMph ? `, viento ${weather.windMph} mph${weather.windDirection ? ` ${weather.windDirection}` : ''}` : ''}.`
+              : '';
+            const reasoning = `${pitcherName} es ${handLabel} y tiene ${seasonK9.toFixed(2)} ponches por cada 9 innings esta temporada (${recentK9.toFixed(2)} en sus últimos 5 arranques). Se espera que lance unas ${pitcherInningsPerStart.toFixed(1)} innings, su promedio real por arranque esta temporada.${inningsNote} Evaluamos a los bateadores del último lineup usado por ${opposingTeamName} contra pitchers ${handLabelPlural}: en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (liga: ${(0.223 * 100).toFixed(1)}%), y su forma reciente en general (últimos 15 días, no solo contra esta mano) da una tasa de ${(recentOverallKRate * 100).toFixed(1)}%. La mezcla de poder (jonrones) y contacto (bateadores de buen promedio que no suelen conectar jonrón) de ese lineup ajusta la proyección ${powerContactFactor >= 1 ? 'al alza' : 'a la baja'} en un ${(Math.abs(powerContactFactor - 1) * 100).toFixed(1)}%. Factor de parque para ponches en ${game.homeTeam}: ${parkFactor.toFixed(2)}x.${weatherNote} Combinando todo esto, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
             const message = formatSignalMessage({
               matchup: `${game.awayTeam} @ ${game.homeTeam}`,
               market: 'Pitcher Strikeouts',

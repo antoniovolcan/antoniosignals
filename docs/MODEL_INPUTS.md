@@ -42,8 +42,13 @@ Referencia de todos los stats/factores que entran en cada tipo de señal, para l
 | Ponches por 9 innings — temporada completa | MLB API, stats de temporada del pitcher | |
 | Ponches por 9 innings — últimos 5 arranques | MLB API, gameLog del pitcher | Combinado 60/40 con temporada |
 | Innings esperados por arranque | MLB API, temporada del pitcher (innings totales ÷ arranques) | Real del pitcher, no un número fijo |
+| **Riesgo de salida corta** | Calculado (`adjustedInningsForEarlyHookRisk`) | Si el ERA del pitcher está por encima del promedio de liga **y** enfrenta una ofensiva rival por encima del promedio (mismo `offensiveFactor` que usa moneyline/totales), se reducen los innings esperados hasta un 35% (piso de 2.0 innings) — asume que lo sacan antes si le entran carreras |
 | Mano de pitcheo (zurdo/derecho) | MLB API, perfil del jugador | |
 | Tasa de ponches del lineup titular rival vs. esa mano | MLB API, boxscore del último partido + stats de cada bateador titular vs esa mano | Promedio de los primeros 5 bateadores |
+| **Forma general reciente del rival** | MLB API, `byDateRange` (últimos 15 días, mismo fetch que usa totales) | Tasa de ponches del equipo en general (no solo vs. esa mano), combinada 70/30 con la tasa específica vs. mano |
+| **Mezcla poder/contacto del lineup rival** | Calculado (`computePowerContactFactor`), a partir de HR y AVG de cada bateador titular vs. esa mano (mismo fetch que la tasa de ponches, sin llamadas extra) | Bateadores con tasa de HR alta (jonroneros) suben la proyección de ponches; bateadores de AVG alto y pocos HR (contacto puro) la bajan. Factor acotado a ±15% |
+| **Factor de parque** | Tabla estática manual (`lib/parkFactors.js`), por equipo local | Aproximado — algunos parques (ej. Coors Field, por la altura) suprimen ponches; otros (ej. Oracle Park, Dodger Stadium) los favorecen levemente. Acotado 0.93x–1.04x |
+| **Clima** | MLB API, `feed/live` del juego (`gameData.weather`) — mejor esfuerzo, puede no estar disponible con mucha anticipación | Frío favorece levemente al pitcher (+3%), calor lo perjudica levemente (-2%), viento fuerte (≥15 mph) hacia afuera/adentro ajusta ±2%. Si no hay dato de clima, no afecta la proyección (factor neutral) |
 
 **No se usa todavía:** situación del bullpen (quién puede relevar si el abridor sale temprano), historial específico pitcher-vs-bateador.
 
@@ -74,3 +79,4 @@ Referencia de todos los stats/factores que entran en cada tipo de señal, para l
 - 2026-07-25: se agregó el ERA de temporada combinado con el reciente para moneyline (antes solo usaba reciente).
 - 2026-07-25: ponches de pitcher pasó de usar el roster completo a usar el lineup real del último partido, y de un número fijo de innings (5.5) a los innings reales del pitcher.
 - 2026-07-25: se agregó el "factor ofensivo" (forma reciente + OPS del lineup vs. mano del pitcher rival) a moneyline y totales.
+- 2026-07-25: ponches de pitcher ahora considera además: forma general reciente del rival (no solo vs. mano), mezcla poder/contacto del lineup (HR vs. AVG), riesgo de salida corta si el pitcher tiene mal ERA contra una ofensiva fuerte, factor de parque, y clima (mejor esfuerzo).
