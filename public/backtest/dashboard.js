@@ -33,15 +33,15 @@ function renderCards(marketSummary) {
     } else if (market === 'moneyline') {
       body = `
         <div class="metric-row"><span class="label">Predicciones</span><span class="value">${m.n}</span></div>
-        <div class="metric-row"><span class="label">Precisión</span><span class="value">${fmt(m.accuracy * 100, 1)}%</span></div>
-        <div class="metric-row"><span class="label">Brier score</span><span class="value">${fmt(m.brier, 3)}</span></div>
+        <div class="metric-row" title="De todas las veces que el modelo dijo quién iba a ganar, en cuántas acertó."><span class="label">Precisión (¿acertó?)</span><span class="value">${fmt(m.accuracy * 100, 1)}%</span></div>
+        <div class="metric-row" title="Qué tan bien calibradas están las probabilidades, no solo si acertó el ganador. 0 = perfecto, 0.25 = como no saber nada y siempre decir 50/50, 1 = muy seguro y muy equivocado."><span class="label">Qué tan confiable es el % (0 = perfecto, 0.25 = adivinando)</span><span class="value">${fmt(m.brier, 3)}</span></div>
       `;
     } else {
       body = `
         <div class="metric-row"><span class="label">Predicciones</span><span class="value">${m.n}</span></div>
         <div class="metric-row"><span class="label">Sesgo (real − proy.)</span><span class="value">${m.bias >= 0 ? '+' : ''}${fmt(m.bias)}</span></div>
-        <div class="metric-row"><span class="label">Error promedio (MAE)</span><span class="value">${fmt(m.mae)}</span></div>
-        <div class="metric-row"><span class="label">RMSE</span><span class="value">${fmt(m.rmse)}</span></div>
+        <div class="metric-row" title="Diferencia promedio entre lo que predijo el modelo y lo que pasó en la realidad, sin importar si fue por arriba o por abajo. Ej: si dice 5.6 y el juego terminó 3 arriba o 3 abajo en promedio, esto marca 3."><span class="label">Qué tan lejos, en promedio</span><span class="value">${fmt(m.mae)}</span></div>
+        <div class="metric-row" title="Como el de arriba, pero castiga más fuerte los fallos grandes. Si este número es bastante más alto que el de arriba, hay algunos fallos gigantes escondidos entre muchos aciertos cercanos."><span class="label">Qué tan feo cuando falla</span><span class="value">${fmt(m.rmse)}</span></div>
       `;
     }
     card.innerHTML = `<h3>${MARKET_LABELS[market]}</h3>${body}`;
@@ -84,8 +84,8 @@ function renderMlChart(daily) {
     data: {
       labels,
       datasets: [
-        { label: 'Precisión', data: daily.map(d => d.moneyline ? d.moneyline.accuracy : null), borderColor: '#4f8cff', backgroundColor: '#4f8cff', spanGaps: true, tension: 0.2, yAxisID: 'y' },
-        { label: 'Brier score (más bajo = mejor)', data: daily.map(d => d.moneyline ? d.moneyline.brier : null), borderColor: '#ff5d5d', backgroundColor: '#ff5d5d', spanGaps: true, tension: 0.2, yAxisID: 'y1' },
+        { label: 'Precisión (¿acertó?)', data: daily.map(d => d.moneyline ? d.moneyline.accuracy : null), borderColor: '#4f8cff', backgroundColor: '#4f8cff', spanGaps: true, tension: 0.2, yAxisID: 'y' },
+        { label: 'Qué tan confiable es el % (más bajo = mejor)', data: daily.map(d => d.moneyline ? d.moneyline.brier : null), borderColor: '#ff5d5d', backgroundColor: '#ff5d5d', spanGaps: true, tension: 0.2, yAxisID: 'y1' },
       ],
     },
     options: {
