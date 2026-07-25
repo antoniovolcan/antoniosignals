@@ -1,6 +1,6 @@
 // api/scan.js
 import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned } from '../lib/db.js';
-import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate, fetchTeamSeasonHitting, extractRunsPerGame, extractInningsPerStart, computeRecentStrikeoutsPer9 } from '../lib/mlb.js';
+import { fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord, fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName, fetchTeamRoster, parseRoster, fetchBatterSeasonStats, extractBattingAvgAndPA, fetchPitcherSeasonStats, extractStrikeoutsPer9, fetchPersonInfo, extractPitchHand, extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate, fetchTeamSeasonHitting, extractRunsPerGame, extractInningsPerStart, computeRecentStrikeoutsPer9, fetchTeamRecentSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes } from '../lib/odds.js';
 import { moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp, impliedProbability, edge, isSignal, formatSignalMessage, expectedPitcherStrikeouts, blendEraEstimates } from '../lib/signals.js';
 import { sendTelegramDocument } from '../lib/telegram.js';
@@ -13,6 +13,26 @@ async function recordSignal(db, { gamePk, market, selection, price, impliedProb,
     sentMessages.push(message);
   } catch (err) {
     console.error(`Failed to record ${market} signal for game ${gamePk}, ${selection}:`, err);
+  }
+}
+
+async function fetchRecentLineup(teamId, beforeDate) {
+  try {
+    const start = new Date(beforeDate);
+    start.setUTCDate(start.getUTCDate() - 10);
+    const startDate = start.toISOString().slice(0, 10);
+    const end = new Date(beforeDate);
+    end.setUTCDate(end.getUTCDate() - 1);
+    const endDate = end.toISOString().slice(0, 10);
+    const scheduleRaw = await fetchTeamRecentSchedule(teamId, startDate, endDate);
+    const gamePk = findMostRecentFinalGamePk(scheduleRaw);
+    if (!gamePk) return null;
+    const boxscoreRaw = await fetchGameBoxscore(gamePk);
+    const lineup = extractStartingLineup(boxscoreRaw, teamId);
+    return lineup.length > 0 ? lineup : null;
+  } catch (err) {
+    console.error(`Failed to fetch recent lineup for team ${teamId}:`, err);
+    return null;
   }
 }
 
@@ -116,12 +136,14 @@ export async function runScan() {
     }
 
     try {
-      const [rosterRaw, awayRosterRaw] = await Promise.all([
+      const [rosterRaw, awayRosterRaw, homeLineup, awayLineup] = await Promise.all([
         fetchTeamRoster(game.homeTeamId),
         fetchTeamRoster(game.awayTeamId),
+        fetchRecentLineup(game.homeTeamId, today),
+        fetchRecentLineup(game.awayTeamId, today),
       ]);
-      const roster = parseRoster(rosterRaw);
-      const awayRoster = parseRoster(awayRosterRaw);
+      const roster = homeLineup || parseRoster(rosterRaw);
+      const awayRoster = awayLineup || parseRoster(awayRosterRaw);
       const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'batter_hits,pitcher_strikeouts');
 
       for (const player of roster.slice(0, 5)) {
@@ -203,7 +225,7 @@ export async function runScan() {
 
           const handLabel = HAND_LABEL[pitchHand] || 'mano no confirmada';
           const handLabelPlural = HAND_LABEL_PLURAL[pitchHand] || 'esa mano';
-          const reasoning = `${pitcherName} es ${handLabel} y tiene ${seasonK9.toFixed(2)} ponches por cada 9 innings esta temporada (${recentK9.toFixed(2)} en sus últimos 5 arranques). Se espera que lance unas ${pitcherInningsPerStart.toFixed(1)} innings, su promedio real por arranque esta temporada. Evaluamos a los bateadores del roster rival contra pitchers ${handLabelPlural} y en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (el promedio de liga es ${(0.223 * 100).toFixed(1)}%). Combinando todo esto, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
+          const reasoning = `${pitcherName} es ${handLabel} y tiene ${seasonK9.toFixed(2)} ponches por cada 9 innings esta temporada (${recentK9.toFixed(2)} en sus últimos 5 arranques). Se espera que lance unas ${pitcherInningsPerStart.toFixed(1)} innings, su promedio real por arranque esta temporada. Evaluamos a los bateadores del último lineup usado por el rival contra pitchers ${handLabelPlural} y en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (el promedio de liga es ${(0.223 * 100).toFixed(1)}%). Combinando todo esto, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
           const message = formatSignalMessage({
             matchup: `${game.awayTeam} @ ${game.homeTeam}`,
             market: 'Pitcher Strikeouts',
