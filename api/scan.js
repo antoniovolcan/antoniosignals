@@ -1,5 +1,5 @@
 // api/scan.js
-import { createDbClient, upsertGame, signalAlreadySentToday, insertSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned } from '../lib/db.js';
+import { createDbClient, upsertGame, getTodaysSignalId, insertSignal, updateSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned } from '../lib/db.js';
 import {
   fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord,
   fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName,
@@ -24,9 +24,13 @@ import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
 
-async function recordSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edgeValue, reasoning, message, sentMessages, line, subjectId }) {
+async function recordSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edgeValue, reasoning, message, sentMessages, line, subjectId, existingSignalId }) {
   try {
-    await insertSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edge: edgeValue, reasoning, line, subjectId });
+    if (existingSignalId) {
+      await updateSignal(db, existingSignalId, { price, impliedProb, estimatedProb, edge: edgeValue, reasoning, line });
+    } else {
+      await insertSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edge: edgeValue, reasoning, line, subjectId });
+    }
     sentMessages.push(message);
   } catch (err) {
     console.error(`Failed to record ${market} signal for game ${gamePk}, ${selection}:`, err);
@@ -176,7 +180,8 @@ export async function runScan({ force = false } = {}) {
         const implied = impliedProbability(price);
         const edgeValue = edge(prob, implied);
         if (!isSignal(prob, implied, threshold)) continue;
-        if (await signalAlreadySentToday(db, game.gamePk, 'moneyline', team)) continue;
+        const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'moneyline', team);
+        if (!force && existingSignalId) continue;
 
         const reasoning = `El modelo compara el pitcheo (ERA de temporada + últimos 5 arranques), la forma reciente en el récord, y qué tan bien está bateando cada lineup titular contra la mano del pitcher rival. Abridor de ${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)} y reciente ${homeEra.toFixed(2)}. Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)} y reciente ${awayEra.toFixed(2)}. Forma reciente: ${game.homeTeam} lleva ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)} en sus últimos 10 juegos, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}. El lineup titular de ${game.homeTeam} batea para ${homeLineupOps.toFixed(3)} de OPS contra pitchers de esa mano, el de ${game.awayTeam} para ${awayLineupOps.toFixed(3)}. Con todo esto, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.`;
         const message = formatSignalMessage({
@@ -186,7 +191,7 @@ export async function runScan({ force = false } = {}) {
           price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
         });
 
-        await recordSignal(db, { gamePk: game.gamePk, market: 'moneyline', selection: team, price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages });
+        await recordSignal(db, { gamePk: game.gamePk, market: 'moneyline', selection: team, price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, existingSignalId });
       }
 
       const projectedTotal = projectedTotalRuns({
@@ -200,7 +205,8 @@ export async function runScan({ force = false } = {}) {
         const implied = impliedProbability(line.price);
         const edgeValue = edge(prob, implied);
         if (!isSignal(prob, implied, threshold)) continue;
-        if (await signalAlreadySentToday(db, game.gamePk, 'totals', `${side} ${line.point}`)) continue;
+        const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals', `${side} ${line.point}`);
+        if (!force && existingSignalId) continue;
 
         const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Combina el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}), el promedio de carreras de cada ofensiva combinando temporada completa y últimos 15 días (${game.homeTeam}: ${homeBlendedRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayBlendedRunsPerGame.toFixed(2)}), y qué tan bien batea el lineup titular de cada equipo contra la mano del pitcher rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS). La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
         const message = formatSignalMessage({
@@ -210,7 +216,7 @@ export async function runScan({ force = false } = {}) {
           price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
         });
 
-        await recordSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: line.point });
+        await recordSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: line.point, existingSignalId });
       }
 
       try {
@@ -242,7 +248,8 @@ export async function runScan({ force = false } = {}) {
             const implied = impliedProbability(overOutcome.price);
             const edgeValue = edge(prob, implied);
             if (!isSignal(prob, implied, threshold)) continue;
-            if (await signalAlreadySentToday(db, game.gamePk, 'player_prop', `${player.fullName} hits`)) continue;
+            const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'player_prop', `${player.fullName} hits`);
+            if (!force && existingSignalId) continue;
 
             const reasoning = `${player.fullName} batea para ${avg.toFixed(3)} de promedio esta temporada y suele tener ${paPerGame.toFixed(1)} turnos al bate por juego, lo que da una tasa esperada de ${expectedRate.toFixed(2)} hits por juego. La casa puso la línea en ${overOutcome.point} hits — como la tasa esperada del modelo supera esa línea, ve valor en el Over.`;
             const message = formatSignalMessage({
@@ -252,7 +259,7 @@ export async function runScan({ force = false } = {}) {
               price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
             });
 
-            await recordSignal(db, { gamePk: game.gamePk, market: 'player_prop', selection: `${player.fullName} hits`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: overOutcome.point, subjectId: player.personId });
+            await recordSignal(db, { gamePk: game.gamePk, market: 'player_prop', selection: `${player.fullName} hits`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: overOutcome.point, subjectId: player.personId, existingSignalId });
           } catch (err) {
             console.error(`Failed to process player prop for ${player.fullName} in game ${game.gamePk}:`, err);
           }
@@ -313,7 +320,8 @@ export async function runScan({ force = false } = {}) {
             const implied = impliedProbability(overOutcome.price);
             const edgeValue = edge(prob, implied);
             if (!isSignal(prob, implied, threshold)) return;
-            if (await signalAlreadySentToday(db, game.gamePk, 'pitcher_strikeouts', `${pitcherName} Ks`)) return;
+            const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'pitcher_strikeouts', `${pitcherName} Ks`);
+            if (!force && existingSignalId) return;
 
             const handLabel = HAND_LABEL[pitchHand] || 'mano no confirmada';
             const handLabelPlural = HAND_LABEL_PLURAL[pitchHand] || 'esa mano';
@@ -331,7 +339,7 @@ export async function runScan({ force = false } = {}) {
               price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
             });
 
-            await recordSignal(db, { gamePk: game.gamePk, market: 'pitcher_strikeouts', selection: `${pitcherName} Ks`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: overOutcome.point, subjectId: pitcherId });
+            await recordSignal(db, { gamePk: game.gamePk, market: 'pitcher_strikeouts', selection: `${pitcherName} Ks`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: overOutcome.point, subjectId: pitcherId, existingSignalId });
           } catch (err) {
             console.error(`Failed to process pitcher strikeout prop for ${pitcherName} in game ${game.gamePk}:`, err);
           }
