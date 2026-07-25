@@ -2,7 +2,7 @@
 import { createDbClient, getUngradedSignalsForDate, markSignalGraded, upsertGameResult, getGameInfo } from '../lib/db.js';
 import { fetchGameLinescore, extractFinalScore, fetchGameBoxscore, extractPlayerBattingHits, extractPlayerPitchingStrikeouts } from '../lib/mlb.js';
 import { gradeMoneylineSignal, gradeTotalsSignal, gradeOverSignal } from '../lib/signals.js';
-import { sendTelegramMessage } from '../lib/telegram.js';
+import { sendTelegramMessage, sendTelegramDocument } from '../lib/telegram.js';
 
 const MARKET_LABELS = {
   moneyline: 'Moneyline',
@@ -102,8 +102,8 @@ async function sendReportMessages(graded, date) {
   const misses = graded.filter(g => !g.hit);
   const accuracy = ((hits.length / graded.length) * 100).toFixed(1);
 
-  let summary = `📊 Reporte de resultados — ${date}\n\n`;
-  summary += `Total de señales calificadas: ${graded.length}\n✅ Aciertos: ${hits.length}\n❌ Fallos: ${misses.length}\nTasa de acierto: ${accuracy}%\n\n`;
+  let content = `REPORTE DE RESULTADOS — ${date}\n\n`;
+  content += `Total de señales calificadas: ${graded.length}\nAciertos: ${hits.length}\nFallos: ${misses.length}\nTasa de acierto: ${accuracy}%\n\n`;
 
   const byMarket = {};
   for (const g of graded) {
@@ -111,9 +111,9 @@ async function sendReportMessages(graded, date) {
     byMarket[g.market].total += 1;
     if (g.hit) byMarket[g.market].hits += 1;
   }
-  summary += 'Por tipo de señal:\n';
+  content += 'Por tipo de señal:\n';
   for (const [market, stats] of Object.entries(byMarket)) {
-    summary += `- ${MARKET_LABELS[market] || market}: ${stats.hits}/${stats.total} (${((stats.hits / stats.total) * 100).toFixed(0)}%)\n`;
+    content += `- ${MARKET_LABELS[market] || market}: ${stats.hits}/${stats.total} (${((stats.hits / stats.total) * 100).toFixed(0)}%)\n`;
   }
 
   const totalsMisses = misses.filter(g => g.market === 'totals');
@@ -121,28 +121,27 @@ async function sendReportMessages(graded, date) {
     const overMisses = totalsMisses.filter(g => g.selection.startsWith('Over')).length;
     const underMisses = totalsMisses.filter(g => g.selection.startsWith('Under')).length;
     if (overMisses > underMisses) {
-      summary += `\n⚠️ Patrón: ${overMisses} de ${totalsMisses.length} fallos de totales fueron señales de Over — el modelo pudo haber sobreestimado las carreras en esos juegos.`;
+      content += `\nPatrón: ${overMisses} de ${totalsMisses.length} fallos de totales fueron señales de Over — el modelo pudo haber sobreestimado las carreras en esos juegos.\n`;
     } else if (underMisses > overMisses) {
-      summary += `\n⚠️ Patrón: ${underMisses} de ${totalsMisses.length} fallos de totales fueron señales de Under — el modelo pudo haber subestimado las carreras en esos juegos.`;
+      content += `\nPatrón: ${underMisses} de ${totalsMisses.length} fallos de totales fueron señales de Under — el modelo pudo haber subestimado las carreras en esos juegos.\n`;
     }
   }
 
-  await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, summary);
-
-  let detail = '📋 Detalle de cada señal:\n\n';
+  content += '\nDETALLE DE CADA SEÑAL:\n\n';
   for (const g of graded) {
-    const icon = g.hit ? '✅' : '❌';
+    const icon = g.hit ? '[ACIERTO]' : '[FALLO]';
     const matchup = `${g.gameInfo.awayTeam} @ ${g.gameInfo.homeTeam}`;
-    const line = `${icon} [${MARKET_LABELS[g.market] || g.market}] ${matchup} — ${g.selection}. Real: ${g.actualValue}\n`;
-    if ((detail + line).length > 3500) {
-      await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, detail);
-      detail = '';
-    }
-    detail += line;
+    content += `${icon} [${MARKET_LABELS[g.market] || g.market}] ${matchup} — ${g.selection}. Real: ${g.actualValue}\n`;
   }
-  if (detail.length > 0) {
-    await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, detail);
-  }
+
+  const filename = `reporte_resultados_${date}.txt`;
+  await sendTelegramDocument(
+    process.env.TELEGRAM_BOT_TOKEN,
+    process.env.TELEGRAM_CHAT_ID,
+    filename,
+    content,
+    `📊 Reporte ${date}: ${hits.length}/${graded.length} aciertos (${accuracy}%)`
+  );
 }
 
 export default async function handler(req, res) {
