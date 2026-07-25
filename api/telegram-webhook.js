@@ -23,7 +23,7 @@ export default async function handler(req, res) {
       const reply = lines.length ? lines.join('\n') : 'No hay juegos de MLB hoy.';
       await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, chatId, reply);
     } else if (text === '/senales') {
-      const result = await runScan();
+      const result = await runScan({ force: true });
       await sendTelegramMessage(
         process.env.TELEGRAM_BOT_TOKEN,
         chatId,

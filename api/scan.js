@@ -72,7 +72,7 @@ async function computeLineupOpsVsHand(lineup, hand) {
   return valid.reduce((sum, v) => sum + v, 0) / valid.length;
 }
 
-export async function runScan() {
+export async function runScan({ force = false } = {}) {
   const db = createDbClient();
   const today = new Date().toISOString().slice(0, 10);
   const threshold = Number(await getConfigValue(db, 'edge_threshold', '0.05'));
@@ -99,7 +99,7 @@ export async function runScan() {
 
     if (game.status !== 'scheduled') continue;
 
-    if (await gameAlreadyScannedToday(db, game.gamePk)) continue;
+    if (!force && await gameAlreadyScannedToday(db, game.gamePk)) continue;
 
     try {
       const oddsEvent = oddsEvents.find(

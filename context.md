@@ -78,7 +78,7 @@ docs/
 ## Comandos de Telegram
 
 - `/hoy` — juegos del día
-- `/senales` — corre el análisis completo bajo demanda (mismo código que el cron)
+- `/senales` — corre el análisis completo bajo demanda (mismo código que el cron), pero siempre en modo `force`: ignora el flag "ya escaneado hoy" y re-analiza todos los juegos programados con datos/cuotas frescos, sin importar cuántas veces se llame ni el gasto de cuota de Odds API
 - `/partido <equipo>` — estado rápido de un juego (no corre análisis completo)
 - `/config edge <0-1>` — cambia el umbral mínimo de edge (default 0.05 = 5%)
 
@@ -103,7 +103,7 @@ docs/
 
 ## Limitaciones conocidas / pendientes (a discutir)
 
-- **Un juego "ya escaneado hoy" no se re-analiza el resto del día**, aunque cambien las cuotas más tarde. Podría perderse valor si la línea se mueve después del primer análisis del día. *(Pendiente de decidir si ajustar.)*
+- **El cron automático** no re-analiza un juego "ya escaneado hoy" el resto del día, aunque cambien las cuotas más tarde. *(`/senales` sí re-analiza siempre, ver arriba — este límite solo aplica al cron horario.)*
 - **Volumen de llamadas a la API de MLB muy alto por partido** (~30-40 llamadas: ERA, K9, roster, lineup, OPS vs mano, etc.) — riesgo real de timeout en el plan gratis de Vercel (10s duro). Ya se aceptó este riesgo; el sistema de "resumir" (`last_scanned_at`) mitiga la pérdida de trabajo si se corta.
 - **Datos de pruebas del 2026-07-24 en la tabla `signals` están contaminados** (duplicados y algunas calificaciones incorrectas de antes del fix) — se dejaron sin borrar a propósito, no confiar en el % de acierto de ese día específico.
 - **Hits del bateador** no usa desglose por mano del pitcher todavía (los otros 3 mercados sí) — candidato a mejorar con la misma técnica.
