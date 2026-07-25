@@ -56,6 +56,15 @@ export default async function handler(req, res) {
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error('telegram-webhook.js error:', err);
+    try {
+      await sendTelegramMessage(
+        process.env.TELEGRAM_BOT_TOKEN,
+        chatId,
+        `⚠️ Hubo un error al procesar ese comando: ${err.message}`
+      );
+    } catch (notifyErr) {
+      console.error('telegram-webhook.js: failed to notify user of error:', notifyErr);
+    }
     res.status(200).json({ ok: true }); // always 200 to Telegram, log the error server-side
   }
 }
