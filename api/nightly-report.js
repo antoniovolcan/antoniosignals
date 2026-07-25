@@ -55,6 +55,7 @@ export async function runNightlyReport(date = yesterdayDateString()) {
         actualValue = `${gameInfo.homeTeam} ${score.home} - ${score.away} ${gameInfo.awayTeam}`;
       } else if (signal.market === 'totals') {
         hit = gradeTotalsSignal({ selection: signal.selection, line: signal.line, homeScore: score.home, awayScore: score.away });
+        if (hit === null) continue;
         actualValue = `${score.home + score.away} carreras`;
       } else if (signal.market === 'player_prop' || signal.market === 'pitcher_strikeouts') {
         if (!boxscoreCache.has(signal.game_pk)) {
@@ -66,6 +67,7 @@ export async function runNightlyReport(date = yesterdayDateString()) {
           : extractPlayerPitchingStrikeouts(boxscore, signal.subject_id);
         if (actual == null) continue;
         hit = gradeOverSignal({ line: signal.line, actualValue: actual });
+        if (hit === null) continue;
         actualValue = signal.market === 'player_prop' ? `${actual} hits` : `${actual} ponches`;
       } else {
         continue;
@@ -127,11 +129,19 @@ async function sendReportMessages(graded, date) {
     }
   }
 
-  content += '\nDETALLE DE CADA SEÑAL:\n\n';
-  for (const g of graded) {
-    const icon = g.hit ? '[ACIERTO]' : '[FALLO]';
+  const hitsList = graded.filter(g => g.hit);
+  const missesList = graded.filter(g => !g.hit);
+
+  content += `\nACIERTOS (${hitsList.length}):\n\n`;
+  for (const g of hitsList) {
     const matchup = `${g.gameInfo.awayTeam} @ ${g.gameInfo.homeTeam}`;
-    content += `${icon} [${MARKET_LABELS[g.market] || g.market}] ${matchup} — ${g.selection}. Real: ${g.actualValue}\n`;
+    content += `[${MARKET_LABELS[g.market] || g.market}] ${matchup} — ${g.selection}. Real: ${g.actualValue}\n`;
+  }
+
+  content += `\nFALLOS (${missesList.length}):\n\n`;
+  for (const g of missesList) {
+    const matchup = `${g.gameInfo.awayTeam} @ ${g.gameInfo.homeTeam}`;
+    content += `[${MARKET_LABELS[g.market] || g.market}] ${matchup} — ${g.selection}. Real: ${g.actualValue}\n`;
   }
 
   const filename = `reporte_resultados_${date}.txt`;
