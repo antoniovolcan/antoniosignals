@@ -17,7 +17,7 @@ import {
   impliedProbability, edge, isSignal, formatSignalMessage,
   expectedPitcherStrikeouts, blendEraEstimates, computeOffensiveFactor,
 } from '../lib/signals.js';
-import { sendTelegramDocument } from '../lib/telegram.js';
+import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
 
@@ -316,6 +316,21 @@ export async function runScan() {
     const filename = `senales_${timestamp}.txt`;
     const content = sentMessages.join('\n\n' + '='.repeat(40) + '\n\n');
     await sendTelegramDocument(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, filename, content, `📄 ${sentMessages.length} señal${sentMessages.length === 1 ? '' : 'es'} nueva${sentMessages.length === 1 ? '' : 's'}`);
+  }
+
+  const scheduledCount = games.filter(g => g.status === 'scheduled').length;
+  const { count: scannedCount } = await db
+    .from('games')
+    .select('game_pk', { count: 'exact', head: true })
+    .eq('date', today)
+    .not('last_scanned_at', 'is', null);
+  const pending = Math.max(0, scheduledCount - (scannedCount || 0));
+  if (pending > 0) {
+    await sendTelegramMessage(
+      process.env.TELEGRAM_BOT_TOKEN,
+      process.env.TELEGRAM_CHAT_ID,
+      `⏳ Quedan ${pending} de ${scheduledCount} partidos programados sin analizar hoy (posiblemente por un corte de tiempo en una corrida anterior) — se completan automáticamente en la próxima corrida.`
+    );
   }
 
   return { scanned: games.length, signalsSent: sentMessages.length };
