@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MLB Model Backtest</title>
+<meta name="robots" content="noindex">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #2a2e38; --text: #e6e8ec; --muted: #8b909c;
+    --accent: #4f8cff; --good: #35c07a; --bad: #ff5d5d; --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); padding: 24px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 20px; }
+  select, input, button { background: var(--panel); border: 1px solid var(--border); color: var(--text); padding: 8px 10px; border-radius: 6px; font-size: 13px; }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .card h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  .card .empty { color: var(--muted); font-size: 13px; }
+  .metric-row { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; }
+  .metric-row .label { color: var(--muted); }
+  .metric-row .value { font-variant-numeric: tabular-nums; }
+  .chart-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 24px; }
+  .chart-wrap h3 { margin: 0 0 12px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .table-wrap { max-height: 480px; overflow: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 4px 16px; }
+  .status { color: var(--muted); font-size: 13px; margin: 12px 0; }
+  .gate { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 60vh; gap: 12px; }
+  .gate input { width: 280px; }
+  a.day-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<div id="gate" class="gate">
+  <div>Este dashboard es privado — ingresa el secreto de acceso</div>
+  <input id="secretInput" type="password" placeholder="secreto">
+  <button id="secretSubmit">Entrar</button>
+</div>
+
+<div id="app" style="display:none">
+  <h1>MLB Model Backtest</h1>
+  <div class="subtitle">Precisión del modelo (sin odds/edge/ROI) — walk-forward, día por día, sin fuga de datos futuros.</div>
+
+  <div class="bar">
+    <select id="runSelect"></select>
+    <button id="refreshBtn">Actualizar</button>
+    <span id="runMeta" class="status"></span>
+  </div>
+
+  <div id="cards" class="cards"></div>
+
+  <div class="chart-wrap">
+    <h3>Sesgo diario por mercado (actual − proyectado)</h3>
+    <canvas id="biasChart" height="90"></canvas>
+  </div>
+
+  <div class="chart-wrap">
+    <h3>Moneyline: precisión y calibración (Brier) por día</h3>
+    <canvas id="mlChart" height="90"></canvas>
+  </div>
+
+  <div class="chart-wrap">
+    <h3>Detalle por día — click en una fecha para ver las predicciones individuales</h3>
+    <div id="dailyTableWrap" class="table-wrap">
+      <table>
+        <thead><tr><th>Fecha</th><th>Moneyline (n / acc / brier)</th><th>Totales (n / sesgo / MAE)</th><th>Ponches (n / sesgo / MAE)</th><th>Hits (n / sesgo / MAE)</th></tr></thead>
+        <tbody id="dailyTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="chart-wrap">
+    <h3 id="detailTitle">Predicciones del día</h3>
+    <div id="detailTableWrap" class="table-wrap">
+      <table>
+        <thead><tr><th>Mercado</th><th>Selección</th><th>Equipos</th><th>Proyectado</th><th>Real</th><th>Factores</th></tr></thead>
+        <tbody id="detailTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>
