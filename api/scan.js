@@ -87,8 +87,8 @@ export async function runScan() {
     const awayPitcherName = (awayGameLog && extractPitcherName(awayGameLog)) || 'abridor no confirmado';
 
     const homeWinProb = moneylineEstimate({
-      home: { last10WinPct: homeLast10, startingPitcherEra: homeEra },
-      away: { last10WinPct: awayLast10, startingPitcherEra: awayEra },
+      home: { last10WinPct: homeLast10, startingPitcherEra: homeBlendedEra },
+      away: { last10WinPct: awayLast10, startingPitcherEra: awayBlendedEra },
     });
     const awayWinProb = 1 - homeWinProb;
 
@@ -100,7 +100,7 @@ export async function runScan() {
       if (!isSignal(prob, implied, threshold)) continue;
       if (await signalAlreadySentToday(db, game.gamePk, 'moneyline', team)) continue;
 
-      const reasoning = `El modelo compara el nivel de pitcheo reciente y el momento de cada equipo. Abridor de ${game.homeTeam}: ${homePitcherName}, con ERA de ${homeEra.toFixed(2)} en sus últimos 5 arranques (mientras más bajo, mejor viene lanzando). Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de ${awayEra.toFixed(2)}. Forma reciente: ${game.homeTeam} lleva ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)} en sus últimos 10 juegos, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}. Con estos datos, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.`;
+      const reasoning = `El modelo compara el nivel de pitcheo (combinando temporada completa y últimos 5 arranques) y el momento de cada equipo. Abridor de ${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)} y reciente ${homeEra.toFixed(2)} (mientras más bajo, mejor viene lanzando). Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)} y reciente ${awayEra.toFixed(2)}. Forma reciente: ${game.homeTeam} lleva ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)} en sus últimos 10 juegos, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}. Con estos datos, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.`;
       const message = formatSignalMessage({
         matchup: `${game.awayTeam} @ ${game.homeTeam}`,
         market: 'Moneyline',
@@ -122,7 +122,7 @@ export async function runScan() {
       const implied = impliedProbability(line.price);
       const edgeValue = edge(prob, implied);
       if (!isSignal(prob, implied, threshold)) continue;
-      if (await signalAlreadySentToday(db, game.gamePk, 'totals', side)) continue;
+      if (await signalAlreadySentToday(db, game.gamePk, 'totals', `${side} ${line.point}`)) continue;
 
       const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Esto combina el ERA de cada abridor esta temporada con su ERA en sus últimos 5 arranques (${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)} y reciente ${homeEra.toFixed(2)}; ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)} y reciente ${awayEra.toFixed(2)}) junto con el promedio real de carreras anotadas por partido de cada ofensiva esta temporada (${game.homeTeam}: ${homeRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayRunsPerGame.toFixed(2)}). La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
       const message = formatSignalMessage({
