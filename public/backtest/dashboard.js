@@ -1,6 +1,6 @@
 // public/backtest/dashboard.js
-const MARKET_LABELS = { moneyline: 'Moneyline', totals: 'Totales', pitcher_strikeouts: 'Ponches', player_prop: 'Hits bateador' };
-const MARKET_COLORS = { totals: '#4f8cff', pitcher_strikeouts: '#ff9f4f', player_prop: '#35c07a' };
+const MARKET_LABELS = { moneyline: 'Moneyline', totals: 'Totales', totals_f5: 'Totales 1ras 5', pitcher_strikeouts: 'Ponches' };
+const MARKET_COLORS = { totals: '#4f8cff', totals_f5: '#35c07a', pitcher_strikeouts: '#ff9f4f' };
 
 let secret = localStorage.getItem('mlbBacktestSecret') || '';
 let runs = [];
@@ -31,7 +31,7 @@ function fmt(n, digits = 2) {
 function renderCards(marketSummary) {
   const cards = document.getElementById('cards');
   cards.innerHTML = '';
-  for (const market of ['moneyline', 'totals', 'pitcher_strikeouts', 'player_prop']) {
+  for (const market of ['moneyline', 'totals', 'totals_f5', 'pitcher_strikeouts']) {
     const m = marketSummary[market];
     const card = document.createElement('div');
     card.className = 'card';
@@ -60,7 +60,7 @@ function renderCards(marketSummary) {
 function renderBiasChart(daily) {
   const ctx = document.getElementById('biasChart');
   const labels = daily.map(d => d.date);
-  const datasets = ['totals', 'pitcher_strikeouts', 'player_prop'].map(market => ({
+  const datasets = ['totals', 'totals_f5', 'pitcher_strikeouts'].map(market => ({
     label: MARKET_LABELS[market],
     data: daily.map(d => d[market] ? d[market].bias : null),
     borderColor: MARKET_COLORS[market],
@@ -118,8 +118,8 @@ function renderDailyTable(daily) {
       <td><a class="day-link" data-date="${d.date}">${d.date}</a></td>
       <td>${cell(d.moneyline)}</td>
       <td>${cell(d.totals)}</td>
+      <td>${cell(d.totals_f5)}</td>
       <td>${cell(d.pitcher_strikeouts)}</td>
-      <td>${cell(d.player_prop)}</td>
     `;
     tbody.appendChild(tr);
   }
@@ -128,7 +128,7 @@ function renderDailyTable(daily) {
   });
 }
 
-const MARKET_ORDER = ['moneyline', 'totals', 'pitcher_strikeouts', 'player_prop'];
+const MARKET_ORDER = ['moneyline', 'totals', 'totals_f5', 'pitcher_strikeouts'];
 
 // Same "acierto"/"fallo" rule for every count-based market: round the model's own projection UP
 // to the implied "at least" threshold — e.g. a 5.4-strikeout projection means "at least 6"; a
@@ -155,6 +155,9 @@ function buildReasoning(p) {
   const scoreLine = (typeof f.homeScore === 'number' && typeof f.awayScore === 'number')
     ? ` Marcador final: ${p.home_team} ${f.homeScore} - ${f.awayScore} ${p.away_team}.`
     : '';
+  const scoreLineF5 = (typeof f.homeScoreF5 === 'number' && typeof f.awayScoreF5 === 'number')
+    ? ` Marcador en las primeras 5: ${p.home_team} ${f.homeScoreF5} - ${f.awayScoreF5} ${p.away_team}.`
+    : '';
 
   if (p.market === 'moneyline') {
     const favored = p.projected_prob > 0.5 ? p.home_team : p.away_team;
@@ -170,9 +173,9 @@ function buildReasoning(p) {
     const threshold = impliedThreshold(p.projected_value);
     return `El modelo proyectó ${num(p.projected_value, 1)} ponches para ${p.selection} (al menos ${threshold}), a partir de su K/9 (${num(f.pitcherK9)}), innings esperados (${num(f.inningsPerStart, 1)}${f.adjustedInnings < f.inningsPerStart - 0.05 ? `, reducidos a ${num(f.adjustedInnings, 1)} por riesgo de salida corta con ERA ${num(f.ownEra)}` : ''}), la tasa de ponches del rival (${pct(f.opposingStrikeoutRate)}), la mezcla poder/contacto de su lineup (factor ${num(f.powerContactFactor)}x), el parque (${num(f.parkFactor)}x) y el clima (factor ${num(f.weatherFactor)}x). Terminó con ${num(p.actual_value, 0)} ponches.`;
   }
-  if (p.market === 'player_prop') {
+  if (p.market === 'totals_f5') {
     const threshold = impliedThreshold(p.projected_value);
-    return `El modelo proyectó ${num(p.projected_value)} hits para ${p.selection} (al menos ${threshold}), usando su promedio de bateo (${num(f.avg, 3)}) y turnos al bate por juego (${num(f.paPerGame, 1)}). Terminó con ${num(p.actual_value, 0)} hits.`;
+    return `El modelo proyectó ${num(p.projected_value, 1)} carreras combinadas en las primeras 5 entradas (equivalente a esperar al menos ${threshold}), usando el promedio de carreras de cada equipo (local ${num(f.homeBlendedRPG)}, visitante ${num(f.awayBlendedRPG)}) ajustado por el ERA de cada abridor (local ${num(f.homeEra)}, visitante ${num(f.awayEra)}) y el factor ofensivo de cada lineup contra la mano rival (local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). En las primeras 5 anotaron ${num(p.actual_value, 0)}.${scoreLineF5}`;
   }
   return '';
 }

@@ -26,13 +26,13 @@ import {
   fetchTeamRecentSchedule, computeLastTenFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   fetchTeamRoster, parseRoster,
   fetchTeamRecentHitting, extractRunsPerGame, extractTeamStrikeoutRate,
-  fetchTeamHittingByDateRangeVsHand, fetchBatterHittingByDateRange, extractBattingAvgAndPA, extractPowerContactProfile,
+  fetchTeamHittingByDateRangeVsHand, extractPowerContactProfile,
   fetchGameFeed, extractWeather,
-  fetchGameLinescore, extractFinalScore, extractPlayerBattingHits, extractPlayerPitchingStrikeouts,
+  fetchGameLinescore, extractFinalScore, extractFirstFiveInningsScore, extractPlayerPitchingStrikeouts,
   fetchPlayByPlay, extractPlateAppearances,
 } from '../lib/mlb.js';
 import {
-  blendEraEstimates, computeOffensiveFactor, computeLineupOps, moneylineEstimate, projectedTotalRuns,
+  blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS, moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns,
   computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
   expectedPitcherStrikeouts,
 } from '../lib/signals.js';
@@ -163,7 +163,7 @@ function computeLineupOpsFromLedger(ledger, lineup, hand) {
     if (overallOps == null) return vsHandOps;
     return blendEraEstimates(vsHandOps, overallOps, 0.5);
   });
-  return computeLineupOps({ batterOpsList, topWeight: 0.4 });
+  return computeLineupOps({ batterOpsList, topWeight: 0.7, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 }
 
 export async function processGame(game, season, ledger) {
@@ -196,8 +196,8 @@ export async function processGame(game, season, ledger) {
   ]);
   const homeLineupOps = computeLineupOpsFromLedger(ledger, homeRoster, awayPitchHand || 'R');
   const awayLineupOps = computeLineupOpsFromLedger(ledger, awayRoster, homePitchHand || 'R');
-  const homeOffensiveFactor = computeOffensiveFactor({ lineupOps: homeLineupOps });
-  const awayOffensiveFactor = computeOffensiveFactor({ lineupOps: awayLineupOps });
+  const homeOffensiveFactor = computeOffensiveFactor({ lineupOps: homeLineupOps, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
+  const awayOffensiveFactor = computeOffensiveFactor({ lineupOps: awayLineupOps, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 
   const homeEra = homeProfile?.blendedEra ?? 4.00;
   const awayEra = awayProfile?.blendedEra ?? 4.00;
@@ -228,7 +228,22 @@ export async function processGame(game, season, ledger) {
     factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away },
   });
 
-  // --- Pitcher strikeouts + batter hits need the boxscore, weather, and the team-level strikeout matchup ---
+  // --- Totals, first 5 innings ---
+  const f5Score = extractFirstFiveInningsScore(linescoreRaw);
+  if (f5Score) {
+    const projectedF5Total = projectedFirstFiveInningsRuns({
+      home: { runsPerGame: homeBlendedRPG * homeOffensiveFactor, startingPitcherEra: homeEra },
+      away: { runsPerGame: awayBlendedRPG * awayOffensiveFactor, startingPitcherEra: awayEra },
+    });
+    predictions.push({
+      gamePk: game.gamePk, gameDate: game.date, market: 'totals_f5', selection: 'total_runs_f5',
+      homeTeam: game.homeTeam, awayTeam: game.awayTeam,
+      projectedValue: projectedF5Total, actualValue: f5Score.home + f5Score.away,
+      factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, homeScoreF5: f5Score.home, awayScoreF5: f5Score.away },
+    });
+  }
+
+  // --- Pitcher strikeouts need the boxscore, weather, and the team-level strikeout matchup ---
   let boxscore = null;
   let weather = { tempF: null, windMph: 0, windDirection: '', condition: null };
   try {
@@ -269,29 +284,6 @@ export async function processGame(game, season, ledger) {
       projectedValue: expectedK, actualValue: actualK,
       factors: { pitcherK9: profile.pitcherK9, inningsPerStart: profile.inningsPerStart, adjustedInnings, ownEra, opposingOffensiveFactor, powerContactFactor, parkFactor, weatherFactor, opposingStrikeoutRate: opposingMatchup.strikeoutRate },
     });
-  }
-
-  // --- Batter hits: top 5 of each team's roster (reusing the lineups already resolved above) ---
-  if (boxscore) {
-    for (const [roster, teamLabel] of [[homeRoster, game.homeTeam], [awayRoster, game.awayTeam]]) {
-      for (const batter of roster.slice(0, 5)) {
-        try {
-          const actualHits = extractPlayerBattingHits(boxscore, batter.personId);
-          if (actualHits == null) continue; // didn't play that day
-          const raw = await fetchBatterHittingByDateRange(batter.personId, season, `${season}-03-01`, addDays(game.date, -1));
-          const { avg, paPerGame } = extractBattingAvgAndPA(raw);
-          const expectedRate = avg * paPerGame;
-          predictions.push({
-            gamePk: game.gamePk, gameDate: game.date, market: 'player_prop', selection: batter.fullName, subjectId: batter.personId,
-            homeTeam: game.homeTeam, awayTeam: game.awayTeam,
-            projectedValue: expectedRate, actualValue: actualHits,
-            factors: { avg, paPerGame, team: teamLabel },
-          });
-        } catch (err) {
-          // skip this batter, keep going
-        }
-      }
-    }
   }
 
   return predictions;
