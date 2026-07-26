@@ -178,7 +178,7 @@ export async function processGame(game, season) {
     gamePk: game.gamePk, gameDate: game.date, market: 'moneyline', selection: game.homeTeam,
     homeTeam: game.homeTeam, awayTeam: game.awayTeam,
     projectedProb: homeWinProb, actualOutcome: score.home > score.away,
-    factors: { homeEra, awayEra, homeLast10, awayLast10, homeOffensiveFactor, awayOffensiveFactor },
+    factors: { homeEra, awayEra, homeLast10, awayLast10, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away },
   });
 
   // --- Totals ---
@@ -192,7 +192,7 @@ export async function processGame(game, season) {
     gamePk: game.gamePk, gameDate: game.date, market: 'totals', selection: 'total_runs',
     homeTeam: game.homeTeam, awayTeam: game.awayTeam,
     projectedValue: projectedTotal, actualValue: score.home + score.away,
-    factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor },
+    factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away },
   });
 
   // --- Pitcher strikeouts + batter hits need the boxscore and weather ---

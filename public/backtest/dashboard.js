@@ -16,6 +16,14 @@ function api(action, params = {}) {
   });
 }
 
+function apiAnalyze(predictionId) {
+  const qs = new URLSearchParams({ secret, predictionId });
+  return fetch(`/api/backtest-analyze?${qs}`).then(async r => {
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `HTTP ${r.status}`);
+    return r.json();
+  });
+}
+
 function fmt(n, digits = 2) {
   return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(digits) : '—';
 }
@@ -144,16 +152,19 @@ function buildReasoning(p) {
   const f = p.factors || {};
   const pct = (v) => (typeof v === 'number' ? (v * 100).toFixed(1) + '%' : '—');
   const num = (v, d = 2) => (typeof v === 'number' ? v.toFixed(d) : '—');
+  const scoreLine = (typeof f.homeScore === 'number' && typeof f.awayScore === 'number')
+    ? ` Marcador final: ${p.home_team} ${f.homeScore} - ${f.awayScore} ${p.away_team}.`
+    : '';
 
   if (p.market === 'moneyline') {
     const favored = p.projected_prob > 0.5 ? p.home_team : p.away_team;
     const won = p.actual_outcome;
     const winner = won ? p.home_team : p.away_team;
-    return `El modelo le dio ${pct(p.projected_prob)} de probabilidad de ganar a ${p.home_team} (local), comparando ERA (local ${num(f.homeEra)} vs. visitante ${num(f.awayEra)}), forma reciente (últimos 10: local ${num(f.homeLast10 * 10, 0)}-${num(10 - f.homeLast10 * 10, 0)}, visitante ${num(f.awayLast10 * 10, 0)}-${num(10 - f.awayLast10 * 10, 0)}) y qué tan bien batea cada lineup contra la mano del pitcher rival (factor ofensivo local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Con eso, favoreció a ${favored}. En la realidad ganó ${winner}.`;
+    return `El modelo le dio ${pct(p.projected_prob)} de probabilidad de ganar a ${p.home_team} (local), comparando ERA (local ${num(f.homeEra)} vs. visitante ${num(f.awayEra)}), forma reciente (últimos 10: local ${num(f.homeLast10 * 10, 0)}-${num(10 - f.homeLast10 * 10, 0)}, visitante ${num(f.awayLast10 * 10, 0)}-${num(10 - f.awayLast10 * 10, 0)}) y qué tan bien batea cada lineup contra la mano del pitcher rival (factor ofensivo local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Con eso, favoreció a ${favored}. En la realidad ganó ${winner}.${scoreLine}`;
   }
   if (p.market === 'totals') {
     const threshold = impliedThreshold(p.projected_value);
-    return `El modelo proyectó ${num(p.projected_value, 1)} carreras combinadas (equivalente a esperar al menos ${threshold}), usando el promedio de carreras de cada equipo (local ${num(f.homeBlendedRPG)}, visitante ${num(f.awayBlendedRPG)}) ajustado por el ERA de cada abridor (local ${num(f.homeEra)}, visitante ${num(f.awayEra)}) y el factor ofensivo de cada lineup contra la mano rival (local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Terminaron anotando ${num(p.actual_value, 0)}.`;
+    return `El modelo proyectó ${num(p.projected_value, 1)} carreras combinadas (equivalente a esperar al menos ${threshold}), usando el promedio de carreras de cada equipo (local ${num(f.homeBlendedRPG)}, visitante ${num(f.awayBlendedRPG)}) ajustado por el ERA de cada abridor (local ${num(f.homeEra)}, visitante ${num(f.awayEra)}) y el factor ofensivo de cada lineup contra la mano rival (local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Terminaron anotando ${num(p.actual_value, 0)}.${scoreLine}`;
   }
   if (p.market === 'pitcher_strikeouts') {
     const threshold = impliedThreshold(p.projected_value);
@@ -197,15 +208,35 @@ function renderDetailTable() {
       actual = fmt(p.actual_value, 0);
     }
     const tr = document.createElement('tr');
+    const analyzeUi = currentTab === 'misses'
+      ? `<div class="analyze-box"><button class="analyze-btn" data-id="${p.id}">¿Por qué falló?</button><div class="analyze-result" id="analyze-${p.id}"></div></div>`
+      : '';
     tr.innerHTML = `
       <td>${MARKET_LABELS[p.market] || p.market}</td>
       <td>${selection}</td>
       <td>${p.away_team} @ ${p.home_team}</td>
       <td>${proj}</td>
       <td>${actual}</td>
-      <td class="reasoning-cell">${buildReasoning(p)}</td>
+      <td class="reasoning-cell">${buildReasoning(p)}${analyzeUi}</td>
     `;
     tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll('.analyze-btn').forEach(btn => {
+    btn.addEventListener('click', () => runMissAnalysis(btn.dataset.id));
+  });
+}
+
+async function runMissAnalysis(predictionId) {
+  const box = document.getElementById(`analyze-${predictionId}`);
+  box.innerHTML = '<span class="analyzing">Analizando jugada por jugada…</span>';
+  try {
+    const { narrative, suggestions } = await apiAnalyze(predictionId);
+    const suggestionsHtml = suggestions && suggestions.length > 0
+      ? `<ul class="suggestions">${suggestions.map(s => `<li>${s}</li>`).join('')}</ul>`
+      : '';
+    box.innerHTML = `<div class="analysis-narrative">${narrative}</div>${suggestionsHtml}`;
+  } catch (err) {
+    box.innerHTML = `<span class="analyze-error">Error analizando: ${err.message}</span>`;
   }
 }
 
