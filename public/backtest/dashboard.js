@@ -122,16 +122,20 @@ function renderDailyTable(daily) {
 
 const MARKET_ORDER = ['moneyline', 'totals', 'pitcher_strikeouts', 'player_prop'];
 
-// Same "acierto"/"fallo" rule for every count-based market: round the model's own projection
-// to the nearest whole number and treat that as the implied "over" line — e.g. a 5.4-strikeout
-// projection means "at least 5"; 5 or more actual strikeouts is a hit, 4 or fewer is a miss.
+// Same "acierto"/"fallo" rule for every count-based market: round the model's own projection UP
+// to the implied "at least" threshold — e.g. a 5.4-strikeout projection means "at least 6"; a
+// 0.43-hit projection means "at least 1" (rounding to the NEAREST integer would round 0.43 down
+// to 0, and "at least 0" can never miss since actuals can't go negative — that was the bug).
 // Moneyline just compares the favored side against what actually happened.
+function impliedThreshold(projectedValue) {
+  return Math.ceil(projectedValue);
+}
 function isHit(p) {
   if (p.projected_prob != null && p.actual_outcome != null) {
     return (p.projected_prob > 0.5) === p.actual_outcome;
   }
   if (p.projected_value != null && p.actual_value != null) {
-    return p.actual_value >= Math.round(p.projected_value);
+    return p.actual_value >= impliedThreshold(p.projected_value);
   }
   return null;
 }
@@ -148,15 +152,15 @@ function buildReasoning(p) {
     return `El modelo le dio ${pct(p.projected_prob)} de probabilidad de ganar a ${p.home_team} (local), comparando ERA (local ${num(f.homeEra)} vs. visitante ${num(f.awayEra)}), forma reciente (últimos 10: local ${num(f.homeLast10 * 10, 0)}-${num(10 - f.homeLast10 * 10, 0)}, visitante ${num(f.awayLast10 * 10, 0)}-${num(10 - f.awayLast10 * 10, 0)}) y qué tan bien batea cada lineup contra la mano del pitcher rival (factor ofensivo local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Con eso, favoreció a ${favored}. En la realidad ganó ${winner}.`;
   }
   if (p.market === 'totals') {
-    const threshold = Math.round(p.projected_value);
+    const threshold = impliedThreshold(p.projected_value);
     return `El modelo proyectó ${num(p.projected_value, 1)} carreras combinadas (equivalente a esperar al menos ${threshold}), usando el promedio de carreras de cada equipo (local ${num(f.homeBlendedRPG)}, visitante ${num(f.awayBlendedRPG)}) ajustado por el ERA de cada abridor (local ${num(f.homeEra)}, visitante ${num(f.awayEra)}) y el factor ofensivo de cada lineup contra la mano rival (local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Terminaron anotando ${num(p.actual_value, 0)}.`;
   }
   if (p.market === 'pitcher_strikeouts') {
-    const threshold = Math.round(p.projected_value);
+    const threshold = impliedThreshold(p.projected_value);
     return `El modelo proyectó ${num(p.projected_value, 1)} ponches para ${p.selection} (al menos ${threshold}), a partir de su K/9 (${num(f.pitcherK9)}), innings esperados (${num(f.inningsPerStart, 1)}${f.adjustedInnings < f.inningsPerStart - 0.05 ? `, reducidos a ${num(f.adjustedInnings, 1)} por riesgo de salida corta con ERA ${num(f.ownEra)}` : ''}), la tasa de ponches del rival (${pct(f.opposingStrikeoutRate)}), la mezcla poder/contacto de su lineup (factor ${num(f.powerContactFactor)}x), el parque (${num(f.parkFactor)}x) y el clima (factor ${num(f.weatherFactor)}x). Terminó con ${num(p.actual_value, 0)} ponches.`;
   }
   if (p.market === 'player_prop') {
-    const threshold = Math.round(p.projected_value);
+    const threshold = impliedThreshold(p.projected_value);
     return `El modelo proyectó ${num(p.projected_value)} hits para ${p.selection} (al menos ${threshold}), usando su promedio de bateo (${num(f.avg, 3)}) y turnos al bate por juego (${num(f.paPerGame, 1)}). Terminó con ${num(p.actual_value, 0)} hits.`;
   }
   return '';
@@ -177,12 +181,25 @@ function renderDetailTable() {
     return;
   }
   for (const p of rows) {
-    const proj = p.projected_prob != null ? `${fmt(p.projected_prob * 100, 1)}%` : fmt(p.projected_value);
-    const actual = p.actual_outcome != null ? (p.actual_outcome ? 'Ganó' : 'Perdió') : fmt(p.actual_value, 0);
+    // For moneyline, always display the team the model actually favored (not always the home
+    // team) and who actually won by name — showing the home team's raw win% regardless of which
+    // side it favored made a correct pick (e.g. 31% for the home team, meaning it favored the
+    // away team, which then won) look like a wrong one at a glance.
+    let selection, proj, actual;
+    if (p.market === 'moneyline') {
+      const favoredHome = p.projected_prob > 0.5;
+      selection = favoredHome ? p.home_team : p.away_team;
+      proj = `${fmt((favoredHome ? p.projected_prob : 1 - p.projected_prob) * 100, 1)}%`;
+      actual = p.actual_outcome ? p.home_team : p.away_team;
+    } else {
+      selection = p.selection || '—';
+      proj = fmt(p.projected_value);
+      actual = fmt(p.actual_value, 0);
+    }
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${MARKET_LABELS[p.market] || p.market}</td>
-      <td>${p.selection || '—'}</td>
+      <td>${selection}</td>
       <td>${p.away_team} @ ${p.home_team}</td>
       <td>${proj}</td>
       <td>${actual}</td>
