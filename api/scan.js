@@ -16,7 +16,7 @@ import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEven
 import {
   moneylineEstimate, projectedTotalRuns, overProbability, overProbabilityProp,
   impliedProbability, edge, isSignal, formatSignalMessage,
-  expectedPitcherStrikeouts, blendEraEstimates, computeOffensiveFactor,
+  expectedPitcherStrikeouts, blendEraEstimates, computeOffensiveFactor, computeLineupOps,
   computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
 } from '../lib/signals.js';
 import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
@@ -57,23 +57,28 @@ async function fetchRecentLineup(teamId, beforeDate) {
   }
 }
 
-// Averages a lineup's top-5 batters' OPS against a specific opposing pitcher hand.
-// Falls back to the league-average OPS (via extractOpsFromHittingStats's own fallback)
-// if no batter fetch succeeds, so a bad matchup calc never blocks the whole game.
+// For each of a lineup's top-5 batters, blends his OPS specifically vs. this pitcher hand with his
+// overall season OPS (50/50) — a batter's vs-hand split can be a small, noisy sample within a single
+// season, so this keeps the real platoon signal without over-trusting it. Then combines those blended
+// per-batter values (leaning on whichever batter(s) actually stand out, not just the lineup average —
+// see computeLineupOps) into the single OPS figure used for the offensive factor.
 async function computeLineupOpsVsHand(lineup, hand) {
-  const opsValues = await Promise.all(
+  const batterOpsList = await Promise.all(
     lineup.slice(0, 5).map(async (batter) => {
       try {
-        const raw = await fetchBatterHittingVsHand(batter.personId, hand, SEASON);
-        return extractOpsFromHittingStats(raw);
+        const [vsHandRaw, seasonRaw] = await Promise.all([
+          fetchBatterHittingVsHand(batter.personId, hand, SEASON),
+          fetchBatterSeasonStats(batter.personId, SEASON),
+        ]);
+        const vsHandOps = extractOpsFromHittingStats(vsHandRaw);
+        const overallOps = extractOpsFromHittingStats(seasonRaw);
+        return blendEraEstimates(vsHandOps, overallOps, 0.5);
       } catch (err) {
         return null;
       }
     })
   );
-  const valid = opsValues.filter(v => typeof v === 'number' && Number.isFinite(v));
-  if (valid.length === 0) return 0.720;
-  return valid.reduce((sum, v) => sum + v, 0) / valid.length;
+  return computeLineupOps({ batterOpsList });
 }
 
 export async function runScan({ force = false } = {}) {

@@ -9,29 +9,34 @@
 //
 // Recommended start date: ~20 calendar days into the season, so ERA/K9/OPS samples aren't tiny-sample noise.
 //
-// KNOWN METHODOLOGY DIFFERENCE FROM THE LIVE BOT: the live bot's pitcher-strikeout and moneyline/totals
-// "opposing lineup" matchup factors average the top-5 individual batters' stats vs. the pitcher's hand.
-// MLB's API silently ignores the hand filter when combined with a historical date range at the PLAYER
-// level (confirmed empirically), so this backtest uses the TEAM's date-scoped vs-hand stats instead —
-// a fair proxy, but not identical to the live methodology. Team-level date+hand filtering IS correctly
-// applied by the API, and player-level date filtering (without a hand split) also works fine, which is
-// why the batter-hits market below can still be backtested with real per-player, date-scoped accuracy.
+// INDIVIDUAL BATTER-VS-HAND DATA: MLB's API silently ignores the pitcher-hand filter when combined
+// with a historical date range at the PLAYER level, so there's no direct endpoint for "this batter's
+// stats vs. lefties, as of this past date". Instead, lib/battingLedger.js derives it ourselves from
+// real play-by-play, processed in chronological order — a running ledger, primed from PRIMING_START
+// through the day before this run's start date, then updated one day at a time as the walk-forward
+// loop advances (always AFTER that day's predictions are made, never before, to stay leak-free). This
+// gives the backtest the same per-batter, vs-hand-blended-with-overall fidelity as the live bot for
+// the moneyline/totals offensive factor. The pitcher-strikeout market's "opposing lineup" K-rate and
+// power/contact mix still use a team-level date-scoped proxy (team-level date+hand filtering DOES
+// work correctly via the API) rather than the ledger — not yet upgraded to the per-batter approach.
 import {
   fetchSchedule, parseScheduleGames, fetchPitcherGameLog, filterGameLogBefore,
   computeRecentEra, computeSeasonEra, computeRecentStrikeoutsPer9, computeInningsPerStartFromGameLog,
   extractPitcherName, fetchPersonInfo, extractPitchHand,
   fetchTeamRecentSchedule, computeLastTenFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   fetchTeamRoster, parseRoster,
-  fetchTeamRecentHitting, extractRunsPerGame, extractOpsFromHittingStats, extractTeamStrikeoutRate,
+  fetchTeamRecentHitting, extractRunsPerGame, extractTeamStrikeoutRate,
   fetchTeamHittingByDateRangeVsHand, fetchBatterHittingByDateRange, extractBattingAvgAndPA, extractPowerContactProfile,
   fetchGameFeed, extractWeather,
   fetchGameLinescore, extractFinalScore, extractPlayerBattingHits, extractPlayerPitchingStrikeouts,
+  fetchPlayByPlay, extractPlateAppearances,
 } from '../lib/mlb.js';
 import {
-  blendEraEstimates, computeOffensiveFactor, moneylineEstimate, projectedTotalRuns,
+  blendEraEstimates, computeOffensiveFactor, computeLineupOps, moneylineEstimate, projectedTotalRuns,
   computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
   expectedPitcherStrikeouts,
 } from '../lib/signals.js';
+import { createLedger, updateLedgerFromPlateAppearances, getBatterLedgerProfile } from '../lib/battingLedger.js';
 import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
 import { createDbClient, createBacktestRun, finishBacktestRun, insertBacktestPredictions } from '../lib/db.js';
 import { pathToFileURL } from 'node:url';
@@ -112,11 +117,11 @@ async function computeTeamRunsAsOf(teamId, season, cutoffDate) {
   };
 }
 
-// Team-wide proxy for "opposing lineup vs. this pitcher hand" — see the methodology note at the top of the file.
-async function computeTeamVsHandAsOf(teamId, hand, season, cutoffDate) {
+// Team-wide proxy for the pitcher-strikeout market's "opposing lineup" K-rate and power/contact mix.
+// Not used for the offensive factor anymore — that's now individual, via the batting ledger below.
+async function computeTeamStrikeoutMatchupAsOf(teamId, hand, season, cutoffDate) {
   const raw = await fetchTeamHittingByDateRangeVsHand(teamId, hand, season, `${season}-03-01`, addDays(cutoffDate, -1));
   return {
-    ops: extractOpsFromHittingStats(raw),
     strikeoutRate: extractTeamStrikeoutRate(raw),
     powerContact: extractPowerContactProfile(raw),
   };
@@ -135,7 +140,31 @@ async function fetchLineupAsOf(teamId, gameDate) {
   }
 }
 
-export async function processGame(game, season) {
+async function resolveRoster(teamId, gameDate) {
+  const lineup = await fetchLineupAsOf(teamId, gameDate);
+  if (lineup) return lineup;
+  return parseRoster(await fetchTeamRoster(teamId));
+}
+
+// Per batter, blends his ledger OPS specifically vs. this hand with his overall ledger OPS (50/50) —
+// same idea as the live bot: a single-season vs-hand split can be a small, noisy sample. Batters with
+// no ledger data yet (e.g. rookies, or too early in the priming window) are simply skipped;
+// computeLineupOps falls back gracefully if too few batters have data.
+function computeLineupOpsFromLedger(ledger, lineup, hand) {
+  const batterOpsList = lineup.slice(0, 5).map(batter => {
+    const profile = getBatterLedgerProfile(ledger, batter.personId, hand);
+    if (!profile) return null;
+    const vsHandOps = profile.vsHand?.ops ?? null;
+    const overallOps = profile.overall?.ops ?? null;
+    if (vsHandOps == null && overallOps == null) return null;
+    if (vsHandOps == null) return overallOps;
+    if (overallOps == null) return vsHandOps;
+    return blendEraEstimates(vsHandOps, overallOps, 0.5);
+  });
+  return computeLineupOps({ batterOpsList });
+}
+
+export async function processGame(game, season, ledger) {
   const predictions = [];
   const linescoreRaw = await fetchGameLinescore(game.gamePk);
   const score = extractFinalScore(linescoreRaw);
@@ -159,12 +188,14 @@ export async function processGame(game, season) {
     awayPitcherId ? getPitchHand(awayPitcherId) : null,
   ]);
 
-  const [homeVsAwayHand, awayVsHomeHand] = await Promise.all([
-    computeTeamVsHandAsOf(game.homeTeamId, awayPitchHand || 'R', season, game.date),
-    computeTeamVsHandAsOf(game.awayTeamId, homePitchHand || 'R', season, game.date),
+  const [homeRoster, awayRoster] = await Promise.all([
+    resolveRoster(game.homeTeamId, game.date),
+    resolveRoster(game.awayTeamId, game.date),
   ]);
-  const homeOffensiveFactor = computeOffensiveFactor({ lineupOps: homeVsAwayHand.ops });
-  const awayOffensiveFactor = computeOffensiveFactor({ lineupOps: awayVsHomeHand.ops });
+  const homeLineupOps = computeLineupOpsFromLedger(ledger, homeRoster, awayPitchHand || 'R');
+  const awayLineupOps = computeLineupOpsFromLedger(ledger, awayRoster, homePitchHand || 'R');
+  const homeOffensiveFactor = computeOffensiveFactor({ lineupOps: homeLineupOps });
+  const awayOffensiveFactor = computeOffensiveFactor({ lineupOps: awayLineupOps });
 
   const homeEra = homeProfile?.blendedEra ?? 4.00;
   const awayEra = awayProfile?.blendedEra ?? 4.00;
@@ -195,7 +226,7 @@ export async function processGame(game, season) {
     factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away },
   });
 
-  // --- Pitcher strikeouts + batter hits need the boxscore and weather ---
+  // --- Pitcher strikeouts + batter hits need the boxscore, weather, and the team-level strikeout matchup ---
   let boxscore = null;
   let weather = { tempF: null, windMph: 0, windDirection: '', condition: null };
   try {
@@ -207,37 +238,36 @@ export async function processGame(game, season) {
   const weatherFactor = computeWeatherFactorForStrikeouts(weather);
   const parkFactor = getStrikeoutParkFactor(game.homeTeam);
 
+  const [homeStrikeoutMatchup, awayStrikeoutMatchup] = await Promise.all([
+    computeTeamStrikeoutMatchupAsOf(game.homeTeamId, awayPitchHand || 'R', season, game.date),
+    computeTeamStrikeoutMatchupAsOf(game.awayTeamId, homePitchHand || 'R', season, game.date),
+  ]);
+
   const pitcherSides = [
-    { pitcherId: homePitcherId, profile: homeProfile, ownEra: homeEra, opposingOffensiveFactor: awayOffensiveFactor, opposingVsHand: homeVsAwayHand },
-    { pitcherId: awayPitcherId, profile: awayProfile, ownEra: awayEra, opposingOffensiveFactor: homeOffensiveFactor, opposingVsHand: awayVsHomeHand },
+    { pitcherId: homePitcherId, profile: homeProfile, ownEra: homeEra, opposingOffensiveFactor: awayOffensiveFactor, opposingMatchup: homeStrikeoutMatchup },
+    { pitcherId: awayPitcherId, profile: awayProfile, ownEra: awayEra, opposingOffensiveFactor: homeOffensiveFactor, opposingMatchup: awayStrikeoutMatchup },
   ];
-  for (const { pitcherId, profile, ownEra, opposingOffensiveFactor, opposingVsHand } of pitcherSides) {
+  for (const { pitcherId, profile, ownEra, opposingOffensiveFactor, opposingMatchup } of pitcherSides) {
     if (!pitcherId || !profile || !boxscore) continue;
     const actualK = extractPlayerPitchingStrikeouts(boxscore, pitcherId);
     if (actualK == null) continue; // pitcher didn't actually appear (scratched, etc.)
 
     const adjustedInnings = adjustedInningsForEarlyHookRisk({ baseInnings: profile.inningsPerStart, pitcherEra: ownEra, opposingOffensiveFactor });
-    const powerContactFactor = computeAveragePowerContactFactor([opposingVsHand.powerContact]);
+    const powerContactFactor = computeAveragePowerContactFactor([opposingMatchup.powerContact]);
     const expectedK = expectedPitcherStrikeouts({
-      pitcherK9: profile.pitcherK9, teamStrikeoutRate: opposingVsHand.strikeoutRate, expectedInnings: adjustedInnings,
+      pitcherK9: profile.pitcherK9, teamStrikeoutRate: opposingMatchup.strikeoutRate, expectedInnings: adjustedInnings,
       powerContactFactor, parkFactor, weatherFactor,
     });
     predictions.push({
       gamePk: game.gamePk, gameDate: game.date, market: 'pitcher_strikeouts', selection: profile.name, subjectId: pitcherId,
       homeTeam: game.homeTeam, awayTeam: game.awayTeam,
       projectedValue: expectedK, actualValue: actualK,
-      factors: { pitcherK9: profile.pitcherK9, inningsPerStart: profile.inningsPerStart, adjustedInnings, ownEra, opposingOffensiveFactor, powerContactFactor, parkFactor, weatherFactor, opposingStrikeoutRate: opposingVsHand.strikeoutRate },
+      factors: { pitcherK9: profile.pitcherK9, inningsPerStart: profile.inningsPerStart, adjustedInnings, ownEra, opposingOffensiveFactor, powerContactFactor, parkFactor, weatherFactor, opposingStrikeoutRate: opposingMatchup.strikeoutRate },
     });
   }
 
-  // --- Batter hits: top 5 of each team's most-recently-known lineup ---
+  // --- Batter hits: top 5 of each team's roster (reusing the lineups already resolved above) ---
   if (boxscore) {
-    const [homeLineup, awayLineup] = await Promise.all([fetchLineupAsOf(game.homeTeamId, game.date), fetchLineupAsOf(game.awayTeamId, game.date)]);
-    let homeRoster = homeLineup;
-    let awayRoster = awayLineup;
-    if (!homeRoster) homeRoster = parseRoster(await fetchTeamRoster(game.homeTeamId));
-    if (!awayRoster) awayRoster = parseRoster(await fetchTeamRoster(game.awayTeamId));
-
     for (const [roster, teamLabel] of [[homeRoster, game.homeTeam], [awayRoster, game.awayTeam]]) {
       for (const batter of roster.slice(0, 5)) {
         try {
@@ -262,6 +292,26 @@ export async function processGame(game, season) {
   return predictions;
 }
 
+async function fetchFinalGamesForDate(date) {
+  const games = parseScheduleGames(await fetchSchedule(date)).map(g => ({ ...g, date }));
+  return games.filter(g => g.status === 'final');
+}
+
+// Feeds a day's real plate appearances into the ledger — call ONLY after that day's predictions
+// have already been computed, so the ledger never leaks same-day or future information.
+async function updateLedgerWithGames(ledger, finalGames, dateLabel) {
+  for (const game of finalGames) {
+    try {
+      const pbp = await fetchPlayByPlay(game.gamePk);
+      updateLedgerFromPlateAppearances(ledger, extractPlateAppearances(pbp));
+    } catch (err) {
+      console.error(`  Error actualizando la libreta con el partido ${game.gamePk} (${dateLabel}):`, err.message);
+    }
+  }
+}
+
+const PRIMING_START_MONTH_DAY = '03-20'; // a few days after typical Opening Day, close enough
+
 async function main() {
   const [, , startDate, endDate, modelNote] = process.argv;
   if (!startDate || !endDate) {
@@ -273,20 +323,32 @@ async function main() {
   const runId = await createBacktestRun(db, { fromDate: startDate, toDate: endDate, modelNote });
   console.log(`Backtest run #${runId}: ${startDate} to ${endDate}${modelNote ? ` (${modelNote})` : ''}`);
 
+  const ledger = createLedger();
+  const primingStart = `${season}-${PRIMING_START_MONTH_DAY}`;
+  const primingDates = dateRange(primingStart, addDays(startDate, -1));
+  console.log(`Calentando la libreta de bateo: ${primingStart} a ${addDays(startDate, -1)} (${primingDates.length} días)...`);
+  for (const [i, date] of primingDates.entries()) {
+    const finalGames = await fetchFinalGamesForDate(date);
+    await updateLedgerWithGames(ledger, finalGames, date);
+    process.stdout.write(`\r  Calentando ${i + 1}/${primingDates.length} (${date})...`);
+  }
+  console.log(`\nLibreta lista: ${ledger.size} bateadores con datos.`);
+
   let totalPredictions = 0;
   for (const date of dateRange(startDate, endDate)) {
-    const games = parseScheduleGames(await fetchSchedule(date)).map(g => ({ ...g, date }));
-    const finalGames = games.filter(g => g.status === 'final');
+    const finalGames = await fetchFinalGamesForDate(date);
     let dayPredictions = [];
 
     for (const game of finalGames) {
       try {
-        const predictions = await processGame(game, season);
+        const predictions = await processGame(game, season, ledger);
         dayPredictions = dayPredictions.concat(predictions);
       } catch (err) {
         console.error(`  ${date}: failed on game ${game.gamePk} (${game.awayTeam} @ ${game.homeTeam}):`, err.message);
       }
     }
+
+    await updateLedgerWithGames(ledger, finalGames, date);
 
     if (dayPredictions.length > 0) {
       await insertBacktestPredictions(db, dayPredictions.map(p => ({ ...p, runId })));
