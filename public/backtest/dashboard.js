@@ -162,55 +162,52 @@ function buildReasoning(p) {
   return '';
 }
 
-function renderPredCard(p) {
-  const proj = p.projected_prob != null ? `${fmt(p.projected_prob * 100, 1)}%` : fmt(p.projected_value);
-  const actual = p.actual_outcome != null ? (p.actual_outcome ? 'Ganó' : 'Perdió') : fmt(p.actual_value, 0);
-  const div = document.createElement('div');
-  div.className = 'pred-card';
-  div.innerHTML = `
-    <div class="pred-head">
-      <span class="sel">${p.selection || '—'}</span>
-      <span class="matchup">${p.away_team} @ ${p.home_team}</span>
-      <span class="nums">proyectado ${proj} — real ${actual}</span>
-    </div>
-    <div class="reasoning">${buildReasoning(p)}</div>
-  `;
-  return div;
+let currentDayPredictions = [];
+let currentTab = 'hits';
+
+function renderDetailTable() {
+  const rows = currentDayPredictions
+    .filter(p => (currentTab === 'hits' ? isHit(p) === true : isHit(p) === false))
+    .sort((a, b) => MARKET_ORDER.indexOf(a.market) - MARKET_ORDER.indexOf(b.market));
+
+  const tbody = document.getElementById('detailTableBody');
+  tbody.innerHTML = '';
+  if (rows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty-note">${currentTab === 'hits' ? 'No hubo aciertos este día.' : 'No hubo fallos este día — ¡perfecto!'}</td></tr>`;
+    return;
+  }
+  for (const p of rows) {
+    const proj = p.projected_prob != null ? `${fmt(p.projected_prob * 100, 1)}%` : fmt(p.projected_value);
+    const actual = p.actual_outcome != null ? (p.actual_outcome ? 'Ganó' : 'Perdió') : fmt(p.actual_value, 0);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${MARKET_LABELS[p.market] || p.market}</td>
+      <td>${p.selection || '—'}</td>
+      <td>${p.away_team} @ ${p.home_team}</td>
+      <td>${proj}</td>
+      <td>${actual}</td>
+      <td class="reasoning-cell">${buildReasoning(p)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function setTab(tab) {
+  currentTab = tab;
+  document.getElementById('tabHits').classList.toggle('active', tab === 'hits');
+  document.getElementById('tabMisses').classList.toggle('active', tab === 'misses');
+  renderDetailTable();
 }
 
 async function loadDetail(date) {
   document.getElementById('detailTitle').textContent = `Predicciones del ${date}`;
   const { predictions } = await api('detail', { runId: currentRunId, date });
-
-  const hits = predictions.filter(p => isHit(p) === true);
-  const misses = predictions.filter(p => isHit(p) === false);
-
-  const container = document.getElementById('detailSections');
-  container.innerHTML = '';
-  if (predictions.length === 0) {
-    container.innerHTML = '<div class="empty-note">No hay predicciones para este día.</div>';
-    return;
-  }
-
-  for (const [sectionClass, label, rows] of [['hits', `✅ Aciertos (${hits.length})`, hits], ['misses', `❌ Fallos (${misses.length})`, misses]]) {
-    const section = document.createElement('div');
-    section.className = `result-section ${sectionClass}`;
-    section.innerHTML = `<h4>${label}</h4>`;
-    if (rows.length === 0) {
-      section.innerHTML += '<div class="empty-note">Ninguno.</div>';
-    } else {
-      for (const market of MARKET_ORDER) {
-        const marketRows = rows.filter(p => p.market === market);
-        if (marketRows.length === 0) continue;
-        const group = document.createElement('div');
-        group.className = 'market-group';
-        group.innerHTML = `<h5>${MARKET_LABELS[market] || market} (${marketRows.length})</h5>`;
-        for (const p of marketRows) group.appendChild(renderPredCard(p));
-        section.appendChild(group);
-      }
-    }
-    container.appendChild(section);
-  }
+  currentDayPredictions = predictions;
+  const hits = predictions.filter(p => isHit(p) === true).length;
+  const misses = predictions.filter(p => isHit(p) === false).length;
+  document.getElementById('tabHits').textContent = `✅ Aciertos (${hits})`;
+  document.getElementById('tabMisses').textContent = `❌ Fallos (${misses})`;
+  setTab(currentTab);
 }
 
 async function loadRuns() {
@@ -236,6 +233,9 @@ async function loadRun(runId) {
   renderBiasChart(daily);
   renderMlChart(daily);
   renderDailyTable(daily);
+  currentDayPredictions = [];
+  document.getElementById('tabHits').textContent = '✅ Aciertos';
+  document.getElementById('tabMisses').textContent = '❌ Fallos';
   document.getElementById('detailTableBody').innerHTML = '';
   document.getElementById('detailTitle').textContent = 'Predicciones del día (elige una fecha arriba)';
 }
@@ -257,5 +257,7 @@ document.getElementById('secretInput').addEventListener('keydown', (e) => {
 });
 document.getElementById('runSelect').addEventListener('change', (e) => loadRun(e.target.value));
 document.getElementById('refreshBtn').addEventListener('click', () => loadRuns());
+document.getElementById('tabHits').addEventListener('click', () => setTab('hits'));
+document.getElementById('tabMisses').addEventListener('click', () => setTab('misses'));
 
 if (secret) showApp();

@@ -38,21 +38,13 @@
   .gate input { width: 280px; }
   a.day-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
 
-  .result-section { margin-bottom: 20px; }
-  .result-section > h4 { margin: 0 0 10px; font-size: 14px; }
-  .result-section.hits > h4 { color: var(--good); }
-  .result-section.misses > h4 { color: var(--bad); }
-  .market-group { margin-bottom: 14px; }
-  .market-group > h5 { margin: 0 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-  .pred-card { border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: rgba(255,255,255,0.015); }
-  .result-section.hits .pred-card { border-left-color: var(--good); }
-  .result-section.misses .pred-card { border-left-color: var(--bad); }
-  .pred-card .pred-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 4px; flex-wrap: wrap; }
-  .pred-card .pred-head .sel { font-weight: 600; }
-  .pred-card .pred-head .matchup { color: var(--muted); }
-  .pred-card .pred-head .nums { font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .pred-card .reasoning { font-size: 12.5px; color: #c5c9d1; line-height: 1.5; }
-  .empty-note { color: var(--muted); font-size: 13px; }
+  .empty-note { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+  .tab-btn { background: var(--panel); border: 1px solid var(--border); color: var(--muted); padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .tab-btn.active { color: var(--text); border-color: var(--accent); }
+  #tabHits.active { border-color: var(--good); color: var(--good); }
+  #tabMisses.active { border-color: var(--bad); color: var(--bad); }
+  #detailTableWrap td.reasoning-cell { white-space: normal; min-width: 320px; color: #c5c9d1; }
 </style>
 </head>
 <body>
@@ -97,7 +89,16 @@
 
   <div class="chart-wrap">
     <h3 id="detailTitle">Predicciones del día</h3>
-    <div id="detailSections"></div>
+    <div class="tabs">
+      <button id="tabHits" class="tab-btn active">✅ Aciertos</button>
+      <button id="tabMisses" class="tab-btn">❌ Fallos</button>
+    </div>
+    <div id="detailTableWrap" class="table-wrap">
+      <table>
+        <thead><tr><th>Mercado</th><th>Selección</th><th>Equipos</th><th>Proyectado</th><th>Real</th><th>Razonamiento</th></tr></thead>
+        <tbody id="detailTableBody"></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
