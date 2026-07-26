@@ -57,14 +57,16 @@ async function fetchRecentLineup(teamId, beforeDate) {
   }
 }
 
-// For each of a lineup's top-5 batters, blends his OPS specifically vs. this pitcher hand with his
+const OFFENSIVE_FACTOR_LINEUP_SIZE = 9; // full projected batting order, not just the top 5
+
+// For each of a lineup's top batters, blends his OPS specifically vs. this pitcher hand with his
 // overall season OPS (50/50) — a batter's vs-hand split can be a small, noisy sample within a single
 // season, so this keeps the real platoon signal without over-trusting it. Then combines those blended
 // per-batter values (leaning on whichever batter(s) actually stand out, not just the lineup average —
 // see computeLineupOps) into the single OPS figure used for the offensive factor.
 async function computeLineupOpsVsHand(lineup, hand) {
   const batterOpsList = await Promise.all(
-    lineup.slice(0, 5).map(async (batter) => {
+    lineup.slice(0, OFFENSIVE_FACTOR_LINEUP_SIZE).map(async (batter) => {
       try {
         const [vsHandRaw, seasonRaw] = await Promise.all([
           fetchBatterHittingVsHand(batter.personId, hand, SEASON),

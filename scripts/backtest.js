@@ -146,12 +146,14 @@ async function resolveRoster(teamId, gameDate) {
   return parseRoster(await fetchTeamRoster(teamId));
 }
 
+const OFFENSIVE_FACTOR_LINEUP_SIZE = 9; // full projected batting order, not just the top 5 — must match scan.js
+
 // Per batter, blends his ledger OPS specifically vs. this hand with his overall ledger OPS (50/50) —
 // same idea as the live bot: a single-season vs-hand split can be a small, noisy sample. Batters with
 // no ledger data yet (e.g. rookies, or too early in the priming window) are simply skipped;
 // computeLineupOps falls back gracefully if too few batters have data.
 function computeLineupOpsFromLedger(ledger, lineup, hand) {
-  const batterOpsList = lineup.slice(0, 5).map(batter => {
+  const batterOpsList = lineup.slice(0, OFFENSIVE_FACTOR_LINEUP_SIZE).map(batter => {
     const profile = getBatterLedgerProfile(ledger, batter.personId, hand);
     if (!profile) return null;
     const vsHandOps = profile.vsHand?.ops ?? null;
