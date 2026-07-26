@@ -163,7 +163,7 @@ function computeLineupOpsFromLedger(ledger, lineup, hand) {
     if (overallOps == null) return vsHandOps;
     return blendEraEstimates(vsHandOps, overallOps, 0.5);
   });
-  return computeLineupOps({ batterOpsList });
+  return computeLineupOps({ batterOpsList, topWeight: 0.4 });
 }
 
 export async function processGame(game, season, ledger) {
@@ -245,9 +245,12 @@ export async function processGame(game, season, ledger) {
     computeTeamStrikeoutMatchupAsOf(game.awayTeamId, homePitchHand || 'R', season, game.date),
   ]);
 
+  // homeStrikeoutMatchup describes the HOME team's batters (vs. the away pitcher's hand) — that's
+  // the AWAY pitcher's opponent, not his own. Bug found during a data audit: these were swapped,
+  // so each pitcher's "opposing lineup" K-rate/power-contact was actually his own team's batters.
   const pitcherSides = [
-    { pitcherId: homePitcherId, profile: homeProfile, ownEra: homeEra, opposingOffensiveFactor: awayOffensiveFactor, opposingMatchup: homeStrikeoutMatchup },
-    { pitcherId: awayPitcherId, profile: awayProfile, ownEra: awayEra, opposingOffensiveFactor: homeOffensiveFactor, opposingMatchup: awayStrikeoutMatchup },
+    { pitcherId: homePitcherId, profile: homeProfile, ownEra: homeEra, opposingOffensiveFactor: awayOffensiveFactor, opposingMatchup: awayStrikeoutMatchup },
+    { pitcherId: awayPitcherId, profile: awayProfile, ownEra: awayEra, opposingOffensiveFactor: homeOffensiveFactor, opposingMatchup: homeStrikeoutMatchup },
   ];
   for (const { pitcherId, profile, ownEra, opposingOffensiveFactor, opposingMatchup } of pitcherSides) {
     if (!pitcherId || !profile || !boxscore) continue;
