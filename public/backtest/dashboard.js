@@ -120,24 +120,96 @@ function renderDailyTable(daily) {
   });
 }
 
+const MARKET_ORDER = ['moneyline', 'totals', 'pitcher_strikeouts', 'player_prop'];
+
+// Same "acierto"/"fallo" rule for every count-based market: round the model's own projection
+// to the nearest whole number and treat that as the implied "over" line — e.g. a 5.4-strikeout
+// projection means "at least 5"; 5 or more actual strikeouts is a hit, 4 or fewer is a miss.
+// Moneyline just compares the favored side against what actually happened.
+function isHit(p) {
+  if (p.projected_prob != null && p.actual_outcome != null) {
+    return (p.projected_prob > 0.5) === p.actual_outcome;
+  }
+  if (p.projected_value != null && p.actual_value != null) {
+    return p.actual_value >= Math.round(p.projected_value);
+  }
+  return null;
+}
+
+function buildReasoning(p) {
+  const f = p.factors || {};
+  const pct = (v) => (typeof v === 'number' ? (v * 100).toFixed(1) + '%' : '—');
+  const num = (v, d = 2) => (typeof v === 'number' ? v.toFixed(d) : '—');
+
+  if (p.market === 'moneyline') {
+    const favored = p.projected_prob > 0.5 ? p.home_team : p.away_team;
+    const won = p.actual_outcome;
+    const winner = won ? p.home_team : p.away_team;
+    return `El modelo le dio ${pct(p.projected_prob)} de probabilidad de ganar a ${p.home_team} (local), comparando ERA (local ${num(f.homeEra)} vs. visitante ${num(f.awayEra)}), forma reciente (últimos 10: local ${num(f.homeLast10 * 10, 0)}-${num(10 - f.homeLast10 * 10, 0)}, visitante ${num(f.awayLast10 * 10, 0)}-${num(10 - f.awayLast10 * 10, 0)}) y qué tan bien batea cada lineup contra la mano del pitcher rival (factor ofensivo local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Con eso, favoreció a ${favored}. En la realidad ganó ${winner}.`;
+  }
+  if (p.market === 'totals') {
+    const threshold = Math.round(p.projected_value);
+    return `El modelo proyectó ${num(p.projected_value, 1)} carreras combinadas (equivalente a esperar al menos ${threshold}), usando el promedio de carreras de cada equipo (local ${num(f.homeBlendedRPG)}, visitante ${num(f.awayBlendedRPG)}) ajustado por el ERA de cada abridor (local ${num(f.homeEra)}, visitante ${num(f.awayEra)}) y el factor ofensivo de cada lineup contra la mano rival (local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Terminaron anotando ${num(p.actual_value, 0)}.`;
+  }
+  if (p.market === 'pitcher_strikeouts') {
+    const threshold = Math.round(p.projected_value);
+    return `El modelo proyectó ${num(p.projected_value, 1)} ponches para ${p.selection} (al menos ${threshold}), a partir de su K/9 (${num(f.pitcherK9)}), innings esperados (${num(f.inningsPerStart, 1)}${f.adjustedInnings < f.inningsPerStart - 0.05 ? `, reducidos a ${num(f.adjustedInnings, 1)} por riesgo de salida corta con ERA ${num(f.ownEra)}` : ''}), la tasa de ponches del rival (${pct(f.opposingStrikeoutRate)}), la mezcla poder/contacto de su lineup (factor ${num(f.powerContactFactor)}x), el parque (${num(f.parkFactor)}x) y el clima (factor ${num(f.weatherFactor)}x). Terminó con ${num(p.actual_value, 0)} ponches.`;
+  }
+  if (p.market === 'player_prop') {
+    const threshold = Math.round(p.projected_value);
+    return `El modelo proyectó ${num(p.projected_value)} hits para ${p.selection} (al menos ${threshold}), usando su promedio de bateo (${num(f.avg, 3)}) y turnos al bate por juego (${num(f.paPerGame, 1)}). Terminó con ${num(p.actual_value, 0)} hits.`;
+  }
+  return '';
+}
+
+function renderPredCard(p) {
+  const proj = p.projected_prob != null ? `${fmt(p.projected_prob * 100, 1)}%` : fmt(p.projected_value);
+  const actual = p.actual_outcome != null ? (p.actual_outcome ? 'Ganó' : 'Perdió') : fmt(p.actual_value, 0);
+  const div = document.createElement('div');
+  div.className = 'pred-card';
+  div.innerHTML = `
+    <div class="pred-head">
+      <span class="sel">${p.selection || '—'}</span>
+      <span class="matchup">${p.away_team} @ ${p.home_team}</span>
+      <span class="nums">proyectado ${proj} — real ${actual}</span>
+    </div>
+    <div class="reasoning">${buildReasoning(p)}</div>
+  `;
+  return div;
+}
+
 async function loadDetail(date) {
   document.getElementById('detailTitle').textContent = `Predicciones del ${date}`;
   const { predictions } = await api('detail', { runId: currentRunId, date });
-  const tbody = document.getElementById('detailTableBody');
-  tbody.innerHTML = '';
-  for (const p of predictions) {
-    const tr = document.createElement('tr');
-    const proj = p.projected_prob != null ? `${fmt(p.projected_prob * 100, 1)}%` : fmt(p.projected_value);
-    const actual = p.actual_outcome != null ? (p.actual_outcome ? 'Ganó' : 'Perdió') : fmt(p.actual_value, 0);
-    tr.innerHTML = `
-      <td>${MARKET_LABELS[p.market] || p.market}</td>
-      <td>${p.selection || '—'}</td>
-      <td>${p.away_team} @ ${p.home_team}</td>
-      <td>${proj}</td>
-      <td>${actual}</td>
-      <td>${p.factors ? Object.entries(p.factors).map(([k, v]) => `${k}=${typeof v === 'number' ? v.toFixed(2) : v}`).join(', ') : '—'}</td>
-    `;
-    tbody.appendChild(tr);
+
+  const hits = predictions.filter(p => isHit(p) === true);
+  const misses = predictions.filter(p => isHit(p) === false);
+
+  const container = document.getElementById('detailSections');
+  container.innerHTML = '';
+  if (predictions.length === 0) {
+    container.innerHTML = '<div class="empty-note">No hay predicciones para este día.</div>';
+    return;
+  }
+
+  for (const [sectionClass, label, rows] of [['hits', `✅ Aciertos (${hits.length})`, hits], ['misses', `❌ Fallos (${misses.length})`, misses]]) {
+    const section = document.createElement('div');
+    section.className = `result-section ${sectionClass}`;
+    section.innerHTML = `<h4>${label}</h4>`;
+    if (rows.length === 0) {
+      section.innerHTML += '<div class="empty-note">Ninguno.</div>';
+    } else {
+      for (const market of MARKET_ORDER) {
+        const marketRows = rows.filter(p => p.market === market);
+        if (marketRows.length === 0) continue;
+        const group = document.createElement('div');
+        group.className = 'market-group';
+        group.innerHTML = `<h5>${MARKET_LABELS[market] || market} (${marketRows.length})</h5>`;
+        for (const p of marketRows) group.appendChild(renderPredCard(p));
+        section.appendChild(group);
+      }
+    }
+    container.appendChild(section);
   }
 }
 

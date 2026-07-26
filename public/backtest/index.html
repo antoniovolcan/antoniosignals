@@ -37,6 +37,22 @@
   .gate { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 60vh; gap: 12px; }
   .gate input { width: 280px; }
   a.day-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+  .result-section { margin-bottom: 20px; }
+  .result-section > h4 { margin: 0 0 10px; font-size: 14px; }
+  .result-section.hits > h4 { color: var(--good); }
+  .result-section.misses > h4 { color: var(--bad); }
+  .market-group { margin-bottom: 14px; }
+  .market-group > h5 { margin: 0 0 8px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .pred-card { border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; background: rgba(255,255,255,0.015); }
+  .result-section.hits .pred-card { border-left-color: var(--good); }
+  .result-section.misses .pred-card { border-left-color: var(--bad); }
+  .pred-card .pred-head { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 4px; flex-wrap: wrap; }
+  .pred-card .pred-head .sel { font-weight: 600; }
+  .pred-card .pred-head .matchup { color: var(--muted); }
+  .pred-card .pred-head .nums { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .pred-card .reasoning { font-size: 12.5px; color: #c5c9d1; line-height: 1.5; }
+  .empty-note { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -81,12 +97,7 @@
 
   <div class="chart-wrap">
     <h3 id="detailTitle">Predicciones del día</h3>
-    <div id="detailTableWrap" class="table-wrap">
-      <table>
-        <thead><tr><th>Mercado</th><th>Selección</th><th>Equipos</th><th>Proyectado</th><th>Real</th><th>Factores</th></tr></thead>
-        <tbody id="detailTableBody"></tbody>
-      </table>
-    </div>
+    <div id="detailSections"></div>
   </div>
 </div>
 
