@@ -102,6 +102,8 @@ async function computePitcherProfileAsOf(pitcherId, season, cutoffDate) {
   const recentEra = computeRecentEra(filtered);
   const seasonEra = computeSeasonEra(filtered);
   const yearByYearRaw = await getPitcherYearByYearStats(pitcherId);
+  // Pass `season`, not `cutoffDate` — career must be scoped to the year being backtested, not the
+  // specific date, since prior seasons are equally "closed" history regardless of the exact day.
   const careerEra = computeCareerEraBeforeSeason(yearByYearRaw, season);
   const careerK9 = computeCareerK9BeforeSeason(yearByYearRaw, season);
   const recentSeasonEra = blendEraEstimates(recentEra, seasonEra);
