@@ -23,6 +23,7 @@ import {
   fetchSchedule, parseScheduleGames, fetchPitcherGameLog, filterGameLogBefore,
   computeRecentEra, computeSeasonEra, computeRecentStrikeoutsPer9, computeInningsPerStartFromGameLog,
   extractPitcherName, fetchPersonInfo, extractPitchHand,
+  fetchPitcherYearByYearStats, computeCareerEraBeforeSeason, computeCareerK9BeforeSeason,
   fetchTeamRecentSchedule, computeLastTenFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   fetchTeamRoster, parseRoster,
   fetchTeamRecentHitting, extractRunsPerGame, extractTeamStrikeoutRate,
@@ -34,7 +35,7 @@ import {
 import {
   blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS, moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns,
   computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
-  expectedPitcherStrikeouts,
+  expectedPitcherStrikeouts, CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT,
 } from '../lib/signals.js';
 import { createLedger, updateLedgerFromPlateAppearances, getBatterLedgerProfile } from '../lib/battingLedger.js';
 import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
@@ -62,6 +63,16 @@ function addDays(dateStr, days) {
 // re-fetching once known — they're just re-filtered per cutoff date, which is cheap and leak-free.
 const gameLogCache = new Map(); // pitcherId -> raw gameLog response
 const pitchHandCache = new Map(); // pitcherId -> 'L' | 'R' | null
+// A pitcher's prior-seasons career stats don't change day to day within a single backtest run
+// (they're seasons strictly before the one being tested), so one fetch per pitcher is enough.
+const yearByYearCache = new Map(); // pitcherId -> raw yearByYear response
+
+async function getPitcherYearByYearStats(pitcherId) {
+  if (!yearByYearCache.has(pitcherId)) {
+    yearByYearCache.set(pitcherId, await fetchPitcherYearByYearStats(pitcherId));
+  }
+  return yearByYearCache.get(pitcherId);
+}
 
 async function getPitcherGameLog(pitcherId, season) {
   const key = `${pitcherId}:${season}`;
@@ -90,12 +101,17 @@ async function computePitcherProfileAsOf(pitcherId, season, cutoffDate) {
   const seasonK9 = computeRecentStrikeoutsPer9(filtered, Infinity);
   const recentEra = computeRecentEra(filtered);
   const seasonEra = computeSeasonEra(filtered);
+  const yearByYearRaw = await getPitcherYearByYearStats(pitcherId);
+  const careerEra = computeCareerEraBeforeSeason(yearByYearRaw, season);
+  const careerK9 = computeCareerK9BeforeSeason(yearByYearRaw, season);
+  const recentSeasonEra = blendEraEstimates(recentEra, seasonEra);
+  const recentSeasonK9 = blendEraEstimates(recentK9, seasonK9);
   return {
     name: extractPitcherName(fullLog) || 'desconocido',
-    blendedEra: blendEraEstimates(recentEra, seasonEra),
-    seasonEra, recentEra,
-    pitcherK9: blendEraEstimates(recentK9, seasonK9),
-    seasonK9, recentK9,
+    blendedEra: careerEra == null ? recentSeasonEra : blendEraEstimates(recentSeasonEra, careerEra, CAREER_ERA_WEIGHT),
+    seasonEra, recentEra, careerEra,
+    pitcherK9: careerK9 == null ? recentSeasonK9 : blendEraEstimates(recentSeasonK9, careerK9, CAREER_K9_WEIGHT),
+    seasonK9, recentK9, careerK9,
     inningsPerStart: computeInningsPerStartFromGameLog(filtered),
   };
 }
