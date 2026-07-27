@@ -11,7 +11,7 @@
 | **URL producción** | `https://mlb-telegram-signals.vercel.app` |
 | **Dashboard de backtest** | `https://mlb-telegram-signals.vercel.app/backtest/` — protegido con `DASHBOARD_SECRET` (guardado en localStorage del navegador) |
 | **Stack** | Node.js (ESM), Vercel serverless, Supabase (Postgres), Telegram Bot API, The Odds API, MLB Stats API (`statsapi.mlb.com`) |
-| **Tests** | `npm test` → `node --test lib/**/*.test.js` (185 tests, solo lógica pura, sin red) |
+| **Tests** | `npm test` → `node --test lib/**/*.test.js` (199 tests, solo lógica pura, sin red) |
 | **Git** | Antonio Volcan / soyvolcom@gmail.com. Commits directos a `master` (proyecto personal, sin PRs) |
 | **Regla** | Cada cambio: implementar → testear → `git push` → `vercel --prod --yes` → verificar con datos reales |
 
@@ -106,6 +106,10 @@ docs/
 
 **Ponches del pitcher**: K/9 temporada+reciente, innings reales (ajustados a la baja si el pitcher tiene mal ERA contra ofensiva fuerte — riesgo de salida corta), tasa de ponches + mezcla poder/contacto del lineup rival (todavía **promedio de equipo**, no individual — candidato a mejorar), factor de parque y clima (mejor esfuerzo).
 
+**ERA y K/9 de carrera — nuevo esta sesión**: además del blend de siempre (reciente 60% + temporada 40%), ahora se re-blendea contra el ERA/K9 de **carrera** del pitcher (todas las temporadas regulares anteriores a la actual, sin incluir la actual) con un peso inicial de **10% carrera / 90% blend de siempre** (`CAREER_ERA_WEIGHT`/`CAREER_K9_WEIGHT = 0.9` en `signals.js`, aplicado como un segundo llamado a `blendEraEstimates` en cascada, no una función nueva). "Carrera" = suma de temporadas anteriores completas vía `stats=yearByYear` de MLB — deliberadamente excluye la temporada en curso para que sea el mismo dato tanto en vivo (`scan.js`) como en el backtest walk-forward (`scripts/backtest.js`, con `season` como corte, no la fecha del día), sin fuga de datos. Si el pitcher no tiene temporadas anteriores (su primera en MLB), el componente de carrera simplemente se omite (no se inventa un valor de reemplazo). **Validado con backtest de mayo (run #20 vs. baseline #15, mismo mes/config)**: con 10% de peso, moneyline accuracy 54.4%→55.1%, Brier casi igual (0.2560→0.2563), totales MAE 3.574→3.570, F5 MAE 2.496→2.495, ponches MAE 1.887→1.865 y bias 0.227→0.192 (más cerca de 0, la mejora más clara). Movimiento chico y en la dirección correcta en casi todo — esperable para un peso de partida del 10%. **Pendiente**: probar 20-30% en corridas adicionales antes de decidir el valor final. El OPS de carrera del bateador se decidió **no** tocarlo en esta sesión (fuera de alcance).
+
+**Trampa encontrada al implementar carrera**: la API `yearByYear` de MLB devuelve una temporada con trade a mitad de año **más de una vez** — una fila por cada equipo, más una fila combinada (sin campo `team`) con el total real. Sumar todas las filas ciegamente triplicaría innings/ER/K de esa temporada. Se deduplicó quedándose solo con la fila combinada cuando existe (`dedupSeasonSplits` en `mlb.js`).
+
 **Factor ofensivo — la pieza que más cambió esta sesión**: en vez de promediar el OPS de los 5 titulares contra la mano del pitcher (como al principio), ahora:
 1. Se evalúan **9 bateadores** (lineup completo), cada uno con su OPS vs.-esa-mano mezclado 50/50 con su OPS general (para no confiar ciegamente en muestra chica de una sola temporada).
 2. Se combina dándole **70% de peso a los 2 bateadores más peligrosos** y 30% al promedio del lineup completo (`computeLineupOps` en `signals.js`, `topN=2, topWeight=0.7`).
@@ -119,12 +123,15 @@ docs/
 
 De sesiones anteriores: dedup de totales roto, moneyline con probabilidades irreales, falsos aciertos en reporte nocturno por `line` faltante, fallos silenciosos en Telegram sin avisar.
 
-**De esta sesión** (los 3 primeros afectan al bot en vivo, no solo al backtest):
+**De la sesión anterior** (los 3 primeros afectan al bot en vivo, no solo al backtest):
 1. **Pretemporada colándose como si fueran juegos reales** — `fetchSchedule`/`fetchTeamRecentSchedule` no filtraban por `gameType=R`. Corregido.
 2. **ERA sin límite en `projectedTotalRuns`** — un pitcher con muestra chica (ej. 1 mal arranque) podía tener ERA de 67.5, disparando proyecciones de 40+ carreras. Clamp agregado (0.4x-2.2x liga).
 3. **AVG sin límite en `extractBattingAvgAndPA`** — mismo problema, un bateador con 1-2 turnos podía dar AVG de 1.000. Clamp agregado (0.150-0.380).
 4. **Swap de rival en ponches, solo en el backtest** (`scan.js` en vivo siempre estuvo bien) — el pitcher local usaba por error las stats de su propio equipo en vez de las del rival. Corregido.
-5. **Calibración del factor ofensivo** — ver sección de arriba, el hallazgo más importante de la sesión.
+5. **Calibración del factor ofensivo** — el hallazgo más importante de esa sesión.
+
+**De esta sesión**:
+1. **Trade a mitad de temporada triplicaría stats de carrera** — la API `yearByYear` de MLB devuelve una temporada canjeada más de una vez (una fila por equipo + una combinada). Deduplicado quedándose solo con la fila combinada. Ver sección del modelo arriba.
 
 ---
 
@@ -146,11 +153,13 @@ De sesiones anteriores: dedup de totales roto, moneyline con probabilidades irre
 - `docs/MODEL_INPUTS.md` quedó desactualizado esta sesión — no confiar en él sin revisar contra el código real.
 - Cuota de The Odds API se agota fácil — el backtest no la toca, pero correr `runScan()`/`/senales` sí.
 - Pendiente decidir sobre el experimento de "pegar temporada anterior" (ver arriba).
+- Pendiente decidir el peso final de ERA/K9 de carrera (arranca en 10%, hay que correr el backtest con distintos valores).
+- OPS de carrera del bateador: no implementado todavía (se decidió dejarlo fuera de esta sesión).
 
 ## Cómo retomar en una sesión nueva
 
 1. Lee este archivo. `docs/MODEL_INPUTS.md` está desactualizado, mejor revisar `lib/signals.js` y `scripts/backtest.js` directamente para el estado real del modelo.
-2. `cd C:\Users\anton\OneDrive\Escritorio\MLB && npm test` — deben pasar 185 tests.
+2. `cd C:\Users\anton\OneDrive\Escritorio\MLB && npm test` — deben pasar 199 tests.
 3. Para ver el estado del modelo con datos reales: entra al dashboard (`/backtest/`, secreto en `.env` como `DASHBOARD_SECRET`) y revisa las corridas de mayo/junio/julio (las más recientes con la config actual).
 4. Para correr un backtest nuevo: `node --env-file=.env scripts/backtest.js <inicio> <fin> "nota"`. Tarda varios minutos por el calentamiento de la libreta de bateo.
 5. Para analizar fallos en bulk: `node --env-file=.env scripts/analyze-misses.js <runId> [--market=X] [--limit=N]`.
