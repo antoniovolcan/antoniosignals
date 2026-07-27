@@ -3,6 +3,7 @@ import { createDbClient, upsertGame, getTodaysSignalId, insertSignal, updateSign
 import {
   fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord,
   fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName,
+  fetchPitcherYearByYearStats, computeCareerEraBeforeSeason, computeCareerK9BeforeSeason,
   fetchTeamRoster, parseRoster,
   fetchBatterSeasonStats,
   fetchPitcherSeasonStats, extractStrikeoutsPer9, extractInningsPerStart, computeRecentStrikeoutsPer9,
@@ -18,6 +19,7 @@ import {
   impliedProbability, edge, isSignal, formatSignalMessage,
   expectedPitcherStrikeouts, blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS,
   computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
+  CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
 } from '../lib/signals.js';
 import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
 import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
@@ -126,6 +128,7 @@ export async function runScan({ force = false } = {}) {
 
       const [
         homeGameLog, awayGameLog,
+        homeYearByYearRaw, awayYearByYearRaw,
         homeSeasonHittingRaw, awaySeasonHittingRaw,
         homeRecentHittingRaw, awayRecentHittingRaw,
         homePersonInfoRaw, awayPersonInfoRaw,
@@ -133,6 +136,8 @@ export async function runScan({ force = false } = {}) {
       ] = await Promise.all([
         homePitcherId ? fetchPitcherGameLog(homePitcherId, SEASON) : Promise.resolve(null),
         awayPitcherId ? fetchPitcherGameLog(awayPitcherId, SEASON) : Promise.resolve(null),
+        homePitcherId ? fetchPitcherYearByYearStats(homePitcherId) : Promise.resolve(null),
+        awayPitcherId ? fetchPitcherYearByYearStats(awayPitcherId) : Promise.resolve(null),
         fetchTeamSeasonHitting(game.homeTeamId, SEASON),
         fetchTeamSeasonHitting(game.awayTeamId, SEASON),
         fetchTeamRecentHitting(game.homeTeamId, SEASON, recentStartDate, recentEndDate),
@@ -149,8 +154,12 @@ export async function runScan({ force = false } = {}) {
       const awayEra = awayGameLog ? computeRecentEra(awayGameLog) : 4.00;
       const homeSeasonEra = homeGameLog ? computeSeasonEra(homeGameLog) : 4.00;
       const awaySeasonEra = awayGameLog ? computeSeasonEra(awayGameLog) : 4.00;
-      const homeBlendedEra = blendEraEstimates(homeEra, homeSeasonEra);
-      const awayBlendedEra = blendEraEstimates(awayEra, awaySeasonEra);
+      const homeCareerEra = homeYearByYearRaw ? computeCareerEraBeforeSeason(homeYearByYearRaw, SEASON) : null;
+      const awayCareerEra = awayYearByYearRaw ? computeCareerEraBeforeSeason(awayYearByYearRaw, SEASON) : null;
+      const homeRecentSeasonEra = blendEraEstimates(homeEra, homeSeasonEra);
+      const awayRecentSeasonEra = blendEraEstimates(awayEra, awaySeasonEra);
+      const homeBlendedEra = homeCareerEra == null ? homeRecentSeasonEra : blendEraEstimates(homeRecentSeasonEra, homeCareerEra, CAREER_ERA_WEIGHT);
+      const awayBlendedEra = awayCareerEra == null ? awayRecentSeasonEra : blendEraEstimates(awayRecentSeasonEra, awayCareerEra, CAREER_ERA_WEIGHT);
 
       const homeSeasonRunsPerGame = extractRunsPerGame(homeSeasonHittingRaw);
       const awaySeasonRunsPerGame = extractRunsPerGame(awaySeasonHittingRaw);
@@ -190,7 +199,7 @@ export async function runScan({ force = false } = {}) {
         const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'moneyline', team);
         if (!force && existingSignalId) continue;
 
-        const reasoning = `El modelo compara el pitcheo (ERA de temporada + últimos 5 arranques), la forma reciente en el récord, y qué tan bien está bateando cada lineup titular contra la mano del pitcher rival. Abridor de ${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)} y reciente ${homeEra.toFixed(2)}. Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)} y reciente ${awayEra.toFixed(2)}. Forma reciente: ${game.homeTeam} lleva ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)} en sus últimos 10 juegos, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}. El lineup titular de ${game.homeTeam} batea para ${homeLineupOps.toFixed(3)} de OPS contra pitchers de esa mano, el de ${game.awayTeam} para ${awayLineupOps.toFixed(3)}. Con todo esto, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.`;
+        const reasoning = `El modelo compara el pitcheo (ERA de temporada + últimos 5 arranques + carrera), la forma reciente en el récord, y qué tan bien está bateando cada lineup titular contra la mano del pitcher rival. Abridor de ${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)}${formatCareerEraNote(homeCareerEra)} y reciente ${homeEra.toFixed(2)}. Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)}${formatCareerEraNote(awayCareerEra)} y reciente ${awayEra.toFixed(2)}. Forma reciente: ${game.homeTeam} lleva ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)} en sus últimos 10 juegos, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}. El lineup titular de ${game.homeTeam} batea para ${homeLineupOps.toFixed(3)} de OPS contra pitchers de esa mano, el de ${game.awayTeam} para ${awayLineupOps.toFixed(3)}. Con todo esto, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.`;
         const message = formatSignalMessage({
           matchup: `${game.awayTeam} @ ${game.homeTeam}`,
           market: 'Moneyline',
@@ -215,7 +224,7 @@ export async function runScan({ force = false } = {}) {
         const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals', `${side} ${line.point}`);
         if (!force && existingSignalId) continue;
 
-        const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Combina el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}), el promedio de carreras de cada ofensiva combinando temporada completa y últimos 15 días (${game.homeTeam}: ${homeBlendedRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayBlendedRunsPerGame.toFixed(2)}), y qué tan bien batea el lineup titular de cada equipo contra la mano del pitcher rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS). La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
+        const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Combina el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}), el promedio de carreras de cada ofensiva combinando temporada completa y últimos 15 días (${game.homeTeam}: ${homeBlendedRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayBlendedRunsPerGame.toFixed(2)}), y qué tan bien batea el lineup titular de cada equipo contra la mano del pitcher rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
         const message = formatSignalMessage({
           matchup: `${game.awayTeam} @ ${game.homeTeam}`,
           market: 'Totals',
@@ -256,7 +265,7 @@ export async function runScan({ force = false } = {}) {
               const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals_f5', `${side} ${line.point}`);
               if (!force && existingSignalId) continue;
 
-              const reasoning = `El modelo proyecta ${projectedF5Total.toFixed(1)} carreras combinadas en las primeras 5 entradas (antes de que entre el bullpen de cualquiera de los dos equipos), usando el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}) y el factor ofensivo de cada lineup contra la mano rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS). La casa puso la línea de primeras 5 entradas en ${line.point}. Como la proyección queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over' : 'Under'}.`;
+              const reasoning = `El modelo proyecta ${projectedF5Total.toFixed(1)} carreras combinadas en las primeras 5 entradas (antes de que entre el bullpen de cualquiera de los dos equipos), usando el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}) y el factor ofensivo de cada lineup contra la mano rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} La casa puso la línea de primeras 5 entradas en ${line.point}. Como la proyección queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over' : 'Under'}.`;
               const message = formatSignalMessage({
                 matchup: `${game.awayTeam} @ ${game.homeTeam}`,
                 market: 'Totales 1ras 5 entradas',
@@ -273,11 +282,11 @@ export async function runScan({ force = false } = {}) {
 
         const pitcherCandidates = [
           {
-            pitcherId: homePitcherId, pitcherName: homePitcherName, opposingRoster: awayRoster, gameLog: homeGameLog, pitchHand: homePitchHand,
+            pitcherId: homePitcherId, pitcherName: homePitcherName, opposingRoster: awayRoster, gameLog: homeGameLog, yearByYearRaw: homeYearByYearRaw, pitchHand: homePitchHand,
             ownEra: homeBlendedEra, opposingOffensiveFactor: awayOffensiveFactor, opposingRecentHittingRaw: awayRecentHittingRaw, opposingTeamName: game.awayTeam,
           },
           {
-            pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingRoster: roster, gameLog: awayGameLog, pitchHand: awayPitchHand,
+            pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingRoster: roster, gameLog: awayGameLog, yearByYearRaw: awayYearByYearRaw, pitchHand: awayPitchHand,
             ownEra: awayBlendedEra, opposingOffensiveFactor: homeOffensiveFactor, opposingRecentHittingRaw: homeRecentHittingRaw, opposingTeamName: game.homeTeam,
           },
         ];
@@ -285,7 +294,7 @@ export async function runScan({ force = false } = {}) {
         const HAND_LABEL = { L: 'zurdo', R: 'derecho' };
         const HAND_LABEL_PLURAL = { L: 'zurdos', R: 'derechos' };
 
-        await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingRoster, gameLog, pitchHand, ownEra, opposingOffensiveFactor, opposingRecentHittingRaw, opposingTeamName }) => {
+        await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingRoster, gameLog, yearByYearRaw, pitchHand, ownEra, opposingOffensiveFactor, opposingRecentHittingRaw, opposingTeamName }) => {
           if (!pitcherId) return;
           try {
             const outcomes = parsePlayerPropOutcomes(propEventOdds, 'pitcher_strikeouts', pitcherName);
@@ -297,7 +306,9 @@ export async function runScan({ force = false } = {}) {
             const seasonStatsRaw = await fetchPitcherSeasonStats(pitcherId, SEASON);
             const seasonK9 = extractStrikeoutsPer9(seasonStatsRaw);
             const recentK9 = gameLog ? computeRecentStrikeoutsPer9(gameLog) : seasonK9;
-            const pitcherK9 = blendEraEstimates(recentK9, seasonK9);
+            const careerK9 = yearByYearRaw ? computeCareerK9BeforeSeason(yearByYearRaw, SEASON) : null;
+            const recentSeasonK9 = blendEraEstimates(recentK9, seasonK9);
+            const pitcherK9 = careerK9 == null ? recentSeasonK9 : blendEraEstimates(recentSeasonK9, careerK9, CAREER_K9_WEIGHT);
             const pitcherInningsPerStart = extractInningsPerStart(seasonStatsRaw);
             const batterVsHandRaws = await Promise.all(
               opposingRoster.slice(0, 5).map(async (batter) => {
@@ -337,7 +348,8 @@ export async function runScan({ force = false } = {}) {
             const weatherNote = weather.tempF != null
               ? ` Clima: ${weather.tempF}°F${weather.windMph ? `, viento ${weather.windMph} mph${weather.windDirection ? ` ${weather.windDirection}` : ''}` : ''}.`
               : '';
-            const reasoning = `${pitcherName} es ${handLabel} y tiene ${seasonK9.toFixed(2)} ponches por cada 9 innings esta temporada (${recentK9.toFixed(2)} en sus últimos 5 arranques). Se espera que lance unas ${pitcherInningsPerStart.toFixed(1)} innings, su promedio real por arranque esta temporada.${inningsNote} Evaluamos a los bateadores del último lineup usado por ${opposingTeamName} contra pitchers ${handLabelPlural}: en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (liga: ${(0.223 * 100).toFixed(1)}%), y su forma reciente en general (últimos 15 días, no solo contra esta mano) da una tasa de ${(recentOverallKRate * 100).toFixed(1)}%. La mezcla de poder (jonrones) y contacto (bateadores de buen promedio que no suelen conectar jonrón) de ese lineup ajusta la proyección ${powerContactFactor >= 1 ? 'al alza' : 'a la baja'} en un ${(Math.abs(powerContactFactor - 1) * 100).toFixed(1)}%. Factor de parque para ponches en ${game.homeTeam}: ${parkFactor.toFixed(2)}x.${weatherNote} Combinando todo esto, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
+            const careerK9Note = careerK9 == null ? '' : ` (carrera: ${careerK9.toFixed(2)})`;
+            const reasoning = `${pitcherName} es ${handLabel} y tiene ${seasonK9.toFixed(2)} ponches por cada 9 innings esta temporada${careerK9Note} (${recentK9.toFixed(2)} en sus últimos 5 arranques). Se espera que lance unas ${pitcherInningsPerStart.toFixed(1)} innings, su promedio real por arranque esta temporada.${inningsNote} Evaluamos a los bateadores del último lineup usado por ${opposingTeamName} contra pitchers ${handLabelPlural}: en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (liga: ${(0.223 * 100).toFixed(1)}%), y su forma reciente en general (últimos 15 días, no solo contra esta mano) da una tasa de ${(recentOverallKRate * 100).toFixed(1)}%. La mezcla de poder (jonrones) y contacto (bateadores de buen promedio que no suelen conectar jonrón) de ese lineup ajusta la proyección ${powerContactFactor >= 1 ? 'al alza' : 'a la baja'} en un ${(Math.abs(powerContactFactor - 1) * 100).toFixed(1)}%. Factor de parque para ponches en ${game.homeTeam}: ${parkFactor.toFixed(2)}x.${weatherNote} Combinando todo esto, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
             const message = formatSignalMessage({
               matchup: `${game.awayTeam} @ ${game.homeTeam}`,
               market: 'Pitcher Strikeouts',
