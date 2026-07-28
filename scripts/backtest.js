@@ -24,7 +24,7 @@ import {
   computeRecentEra, computeSeasonEra, computeRecentStrikeoutsPer9, computeInningsPerStartFromGameLog,
   extractPitcherName, fetchPersonInfo, extractPitchHand,
   fetchPitcherYearByYearStats, computeCareerEraBeforeSeason, computeCareerK9BeforeSeason,
-  fetchTeamRecentSchedule, computeLastTenFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
+  fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   fetchTeamRoster, parseRoster,
   fetchTeamRecentHitting, extractRunsPerGame, extractTeamStrikeoutRate,
   fetchTeamHittingByDateRangeVsHand, extractPowerContactProfile,
@@ -35,7 +35,7 @@ import {
 import {
   blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS, moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns,
   computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
-  expectedPitcherStrikeouts, CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT,
+  expectedPitcherStrikeouts, CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT, TEAM_RECORD_RECENT_WEIGHT,
 } from '../lib/signals.js';
 import { createLedger, updateLedgerFromPlateAppearances, getBatterLedgerProfile } from '../lib/battingLedger.js';
 import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
@@ -118,9 +118,14 @@ async function computePitcherProfileAsOf(pitcherId, season, cutoffDate) {
   };
 }
 
-async function computeLastTenAsOf(teamId, cutoffDate) {
-  const schedule = await fetchTeamRecentSchedule(teamId, addDays(cutoffDate, -25), addDays(cutoffDate, -1));
-  return computeLastTenFromSchedule(schedule, teamId);
+// Blends a team's last-15-games record with its season-to-date record, same as the live bot (see
+// TEAM_RECORD_RECENT_WEIGHT in signals.js). One schedule fetch, from the season opener through the
+// day before cutoffDate, serves both windows via computeWinPctFromSchedule's lastN slicing.
+async function computeTeamRecordWinPctAsOf(teamId, season, cutoffDate) {
+  const schedule = await fetchTeamRecentSchedule(teamId, `${season}-01-01`, addDays(cutoffDate, -1));
+  const seasonWinPct = computeWinPctFromSchedule(schedule, teamId);
+  const recentWinPct = computeWinPctFromSchedule(schedule, teamId, { lastN: 15 });
+  return blendEraEstimates(recentWinPct, seasonWinPct, TEAM_RECORD_RECENT_WEIGHT);
 }
 
 async function computeTeamRunsAsOf(teamId, season, cutoffDate) {
@@ -190,9 +195,9 @@ export async function processGame(game, season, ledger) {
   const score = extractFinalScore(linescoreRaw);
   if (!score) return predictions; // not actually final / no score available, skip
 
-  const [homeLast10, awayLast10, homeRuns, awayRuns] = await Promise.all([
-    computeLastTenAsOf(game.homeTeamId, game.date),
-    computeLastTenAsOf(game.awayTeamId, game.date),
+  const [homeRecordWinPct, awayRecordWinPct, homeRuns, awayRuns] = await Promise.all([
+    computeTeamRecordWinPctAsOf(game.homeTeamId, season, game.date),
+    computeTeamRecordWinPctAsOf(game.awayTeamId, season, game.date),
     computeTeamRunsAsOf(game.homeTeamId, season, game.date),
     computeTeamRunsAsOf(game.awayTeamId, season, game.date),
   ]);
@@ -222,14 +227,14 @@ export async function processGame(game, season, ledger) {
 
   // --- Moneyline ---
   const homeWinProb = moneylineEstimate({
-    home: { last10WinPct: homeLast10, startingPitcherEra: homeEra, offensiveFactor: homeOffensiveFactor },
-    away: { last10WinPct: awayLast10, startingPitcherEra: awayEra, offensiveFactor: awayOffensiveFactor },
+    home: { recordWinPct: homeRecordWinPct, startingPitcherEra: homeEra, offensiveFactor: homeOffensiveFactor },
+    away: { recordWinPct: awayRecordWinPct, startingPitcherEra: awayEra, offensiveFactor: awayOffensiveFactor },
   });
   predictions.push({
     gamePk: game.gamePk, gameDate: game.date, market: 'moneyline', selection: game.homeTeam,
     homeTeam: game.homeTeam, awayTeam: game.awayTeam,
     projectedProb: homeWinProb, actualOutcome: score.home > score.away,
-    factors: { homeEra, awayEra, homeLast10, awayLast10, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away },
+    factors: { homeEra, awayEra, homeRecordWinPct, awayRecordWinPct, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away },
   });
 
   // --- Totals ---

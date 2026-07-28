@@ -26,7 +26,7 @@ import {
   fetchSchedule, parseScheduleGames, fetchPitcherGameLog, filterGameLogBefore,
   computeRecentEra, computeSeasonEra, computeRecentStrikeoutsPer9, computeInningsPerStartFromGameLog,
   extractPitcherName, fetchPersonInfo, extractPitchHand,
-  fetchTeamRecentSchedule, computeLastTenFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
+  fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   fetchTeamRoster, parseRoster,
   fetchTeamRecentHitting, extractRunsPerGame, extractTeamStrikeoutRate,
   fetchTeamHittingByDateRangeVsHand, extractPowerContactProfile,
@@ -117,7 +117,7 @@ async function computePitcherProfileAsOf(pitcherId, season, cutoffDate) {
 // April 1st of the new season (last 10 games might mean late-September 2025 games).
 async function computeLastTenAsOf(teamId, cutoffDate) {
   const schedule = await fetchTeamRecentSchedule(teamId, addDays(cutoffDate, -90), addDays(cutoffDate, -1));
-  return computeLastTenFromSchedule(schedule, teamId);
+  return computeWinPctFromSchedule(schedule, teamId, { lastN: 10 });
 }
 
 async function computeTeamRunsAsOf(teamId, cutoffDate) {
@@ -212,8 +212,8 @@ export async function processGame(game, season, ledger) {
   const awayEra = awayProfile?.blendedEra ?? 4.00;
 
   const homeWinProb = moneylineEstimate({
-    home: { last10WinPct: homeLast10, startingPitcherEra: homeEra, offensiveFactor: homeOffensiveFactor },
-    away: { last10WinPct: awayLast10, startingPitcherEra: awayEra, offensiveFactor: awayOffensiveFactor },
+    home: { recordWinPct: homeLast10, startingPitcherEra: homeEra, offensiveFactor: homeOffensiveFactor },
+    away: { recordWinPct: awayLast10, startingPitcherEra: awayEra, offensiveFactor: awayOffensiveFactor },
   });
   predictions.push({
     gamePk: game.gamePk, gameDate: game.date, market: 'moneyline', selection: game.homeTeam,

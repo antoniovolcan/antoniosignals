@@ -163,7 +163,7 @@ function buildReasoning(p) {
     const favored = p.projected_prob > 0.5 ? p.home_team : p.away_team;
     const won = p.actual_outcome;
     const winner = won ? p.home_team : p.away_team;
-    return `El modelo le dio ${pct(p.projected_prob)} de probabilidad de ganar a ${p.home_team} (local), comparando ERA (local ${num(f.homeEra)} vs. visitante ${num(f.awayEra)}), forma reciente (últimos 10: local ${num(f.homeLast10 * 10, 0)}-${num(10 - f.homeLast10 * 10, 0)}, visitante ${num(f.awayLast10 * 10, 0)}-${num(10 - f.awayLast10 * 10, 0)}) y qué tan bien batea cada lineup contra la mano del pitcher rival (factor ofensivo local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Con eso, favoreció a ${favored}. En la realidad ganó ${winner}.${scoreLine}`;
+    return `El modelo le dio ${pct(p.projected_prob)} de probabilidad de ganar a ${p.home_team} (local), comparando ERA (local ${num(f.homeEra)} vs. visitante ${num(f.awayEra)}), récord de equipo blendeado entre últimos 15 y temporada completa (local ${pct(f.homeRecordWinPct)}, visitante ${pct(f.awayRecordWinPct)}) y qué tan bien batea cada lineup contra la mano del pitcher rival (factor ofensivo local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Con eso, favoreció a ${favored}. En la realidad ganó ${winner}.${scoreLine}`;
   }
   if (p.market === 'totals') {
     const threshold = impliedThreshold(p.projected_value);

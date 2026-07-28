@@ -1,7 +1,7 @@
 // api/scan.js
 import { createDbClient, upsertGame, getTodaysSignalId, insertSignal, updateSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned } from '../lib/db.js';
 import {
-  fetchSchedule, parseScheduleGames, fetchStandings, parseLastTenRecord,
+  fetchSchedule, parseScheduleGames,
   fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName,
   fetchPitcherYearByYearStats, computeCareerEraBeforeSeason, computeCareerK9BeforeSeason,
   fetchTeamRoster, parseRoster,
@@ -10,7 +10,7 @@ import {
   fetchPersonInfo, extractPitchHand,
   extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate,
   fetchTeamSeasonHitting, fetchTeamRecentHitting, extractRunsPerGame, extractOpsFromHittingStats,
-  fetchTeamRecentSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
+  fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   fetchGameFeed, extractWeather, extractPowerContactProfile,
 } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes, extractMarket } from '../lib/odds.js';
@@ -20,6 +20,7 @@ import {
   expectedPitcherStrikeouts, blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS,
   computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
   CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
+  TEAM_RECORD_RECENT_WEIGHT,
 } from '../lib/signals.js';
 import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
 import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
@@ -37,6 +38,20 @@ async function recordSignal(db, { gamePk, market, selection, price, impliedProb,
   } catch (err) {
     console.error(`Failed to record ${market} signal for game ${gamePk}, ${selection}:`, err);
   }
+}
+
+// Blends a team's last-15-games record with its season-to-date record (see TEAM_RECORD_RECENT_WEIGHT
+// in signals.js for why season-to-date is weighted more heavily) — one schedule fetch (from the
+// season opener through yesterday) serves both windows, since computeWinPctFromSchedule can slice
+// to the most recent N games or count everything in the response.
+async function computeTeamRecordWinPct(teamId, beforeDate) {
+  const yesterday = new Date(beforeDate);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  const endDate = yesterday.toISOString().slice(0, 10);
+  const scheduleRaw = await fetchTeamRecentSchedule(teamId, `${SEASON}-01-01`, endDate);
+  const seasonWinPct = computeWinPctFromSchedule(scheduleRaw, teamId);
+  const recentWinPct = computeWinPctFromSchedule(scheduleRaw, teamId, { lastN: 15 });
+  return { recordWinPct: blendEraEstimates(recentWinPct, seasonWinPct, TEAM_RECORD_RECENT_WEIGHT), seasonWinPct, recentWinPct };
 }
 
 async function fetchRecentLineup(teamId, beforeDate) {
@@ -90,9 +105,8 @@ export async function runScan({ force = false } = {}) {
   const today = new Date().toISOString().slice(0, 10);
   const threshold = Number(await getConfigValue(db, 'edge_threshold', '0.05'));
 
-  const [scheduleRaw, standingsRaw, oddsRaw] = await Promise.all([
+  const [scheduleRaw, oddsRaw] = await Promise.all([
     fetchSchedule(today),
-    fetchStandings(SEASON),
     fetchMlbOdds(process.env.ODDS_API_KEY),
   ]);
 
@@ -120,8 +134,10 @@ export async function runScan({ force = false } = {}) {
       );
       if (!oddsEvent) continue;
 
-      const homeLast10 = parseLastTenRecord(standingsRaw, game.homeTeamId);
-      const awayLast10 = parseLastTenRecord(standingsRaw, game.awayTeamId);
+      const [homeRecord, awayRecord] = await Promise.all([
+        computeTeamRecordWinPct(game.homeTeamId, today),
+        computeTeamRecordWinPct(game.awayTeamId, today),
+      ]);
 
       const homePitcherId = game.homeProbablePitcherId;
       const awayPitcherId = game.awayProbablePitcherId;
@@ -185,8 +201,8 @@ export async function runScan({ force = false } = {}) {
       const awayOffensiveFactor = computeOffensiveFactor({ lineupOps: awayLineupOps, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 
       const homeWinProb = moneylineEstimate({
-        home: { last10WinPct: homeLast10, startingPitcherEra: homeBlendedEra, offensiveFactor: homeOffensiveFactor },
-        away: { last10WinPct: awayLast10, startingPitcherEra: awayBlendedEra, offensiveFactor: awayOffensiveFactor },
+        home: { recordWinPct: homeRecord.recordWinPct, startingPitcherEra: homeBlendedEra, offensiveFactor: homeOffensiveFactor },
+        away: { recordWinPct: awayRecord.recordWinPct, startingPitcherEra: awayBlendedEra, offensiveFactor: awayOffensiveFactor },
       });
       const awayWinProb = 1 - homeWinProb;
 
@@ -200,7 +216,7 @@ export async function runScan({ force = false } = {}) {
         const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'moneyline', team);
         if (!force && existingSignalId) continue;
 
-        const reasoning = `El modelo compara el pitcheo (ERA de temporada + últimos 5 arranques + carrera), la forma reciente en el récord, y qué tan bien está bateando cada lineup titular contra la mano del pitcher rival. Abridor de ${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)}${formatCareerEraNote(homeCareerEra)} y reciente ${homeEra.toFixed(2)}. Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)}${formatCareerEraNote(awayCareerEra)} y reciente ${awayEra.toFixed(2)}. Forma reciente: ${game.homeTeam} lleva ${(homeLast10 * 10).toFixed(0)}-${(10 - homeLast10 * 10).toFixed(0)} en sus últimos 10 juegos, ${game.awayTeam} ${(awayLast10 * 10).toFixed(0)}-${(10 - awayLast10 * 10).toFixed(0)}. El lineup titular de ${game.homeTeam} batea para ${homeLineupOps.toFixed(3)} de OPS contra pitchers de esa mano, el de ${game.awayTeam} para ${awayLineupOps.toFixed(3)}. Con todo esto, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.`;
+        const reasoning = `El modelo compara el pitcheo (ERA de temporada + últimos 5 arranques + carrera), el récord de cada equipo (últimos 15 partidos y temporada completa), y qué tan bien está bateando cada lineup titular contra la mano del pitcher rival. Abridor de ${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)}${formatCareerEraNote(homeCareerEra)} y reciente ${homeEra.toFixed(2)}. Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)}${formatCareerEraNote(awayCareerEra)} y reciente ${awayEra.toFixed(2)}. Récord: ${game.homeTeam} tiene ${(homeRecord.seasonWinPct * 100).toFixed(1)}% de victorias en la temporada (${(homeRecord.recentWinPct * 100).toFixed(1)}% en sus últimos 15), ${game.awayTeam} ${(awayRecord.seasonWinPct * 100).toFixed(1)}% en la temporada (${(awayRecord.recentWinPct * 100).toFixed(1)}% en sus últimos 15). El lineup titular de ${game.homeTeam} batea para ${homeLineupOps.toFixed(3)} de OPS contra pitchers de esa mano, el de ${game.awayTeam} para ${awayLineupOps.toFixed(3)}. Con todo esto, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.`;
         const message = formatSignalMessage({
           matchup: `${game.awayTeam} @ ${game.homeTeam}`,
           market: 'Moneyline',
