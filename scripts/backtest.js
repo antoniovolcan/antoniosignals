@@ -38,7 +38,7 @@ import {
   expectedPitcherStrikeouts, CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT, TEAM_RECORD_RECENT_WEIGHT,
 } from '../lib/signals.js';
 import { createLedger, updateLedgerFromPlateAppearances, getBatterLedgerProfile } from '../lib/battingLedger.js';
-import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
+import { getStrikeoutParkFactor, getRunParkFactor } from '../lib/parkFactors.js';
 import { createDbClient, createBacktestRun, finishBacktestRun, insertBacktestPredictions } from '../lib/db.js';
 import { pathToFileURL } from 'node:url';
 
@@ -240,15 +240,17 @@ export async function processGame(game, season, ledger) {
   // --- Totals ---
   const homeBlendedRPG = blendEraEstimates(homeRuns.recentRunsPerGame, homeRuns.seasonRunsPerGame);
   const awayBlendedRPG = blendEraEstimates(awayRuns.recentRunsPerGame, awayRuns.seasonRunsPerGame);
+  const runParkFactor = getRunParkFactor(game.homeTeam);
   const projectedTotal = projectedTotalRuns({
     home: { runsPerGame: homeBlendedRPG * homeOffensiveFactor, startingPitcherEra: homeEra },
     away: { runsPerGame: awayBlendedRPG * awayOffensiveFactor, startingPitcherEra: awayEra },
+    parkFactor: runParkFactor,
   });
   predictions.push({
     gamePk: game.gamePk, gameDate: game.date, market: 'totals', selection: 'total_runs',
     homeTeam: game.homeTeam, awayTeam: game.awayTeam,
     projectedValue: projectedTotal, actualValue: score.home + score.away,
-    factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away },
+    factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, runParkFactor, homeScore: score.home, awayScore: score.away },
   });
 
   // --- Totals, first 5 innings ---
@@ -257,12 +259,13 @@ export async function processGame(game, season, ledger) {
     const projectedF5Total = projectedFirstFiveInningsRuns({
       home: { runsPerGame: homeBlendedRPG * homeOffensiveFactor, startingPitcherEra: homeEra },
       away: { runsPerGame: awayBlendedRPG * awayOffensiveFactor, startingPitcherEra: awayEra },
+      parkFactor: runParkFactor,
     });
     predictions.push({
       gamePk: game.gamePk, gameDate: game.date, market: 'totals_f5', selection: 'total_runs_f5',
       homeTeam: game.homeTeam, awayTeam: game.awayTeam,
       projectedValue: projectedF5Total, actualValue: f5Score.home + f5Score.away,
-      factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, homeScoreF5: f5Score.home, awayScoreF5: f5Score.away },
+      factors: { homeBlendedRPG, awayBlendedRPG, homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, runParkFactor, homeScoreF5: f5Score.home, awayScoreF5: f5Score.away },
     });
   }
 

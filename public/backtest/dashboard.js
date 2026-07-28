@@ -167,7 +167,7 @@ function buildReasoning(p) {
   }
   if (p.market === 'totals') {
     const threshold = impliedThreshold(p.projected_value);
-    return `El modelo proyectó ${num(p.projected_value, 1)} carreras combinadas (equivalente a esperar al menos ${threshold}), usando el promedio de carreras de cada equipo (local ${num(f.homeBlendedRPG)}, visitante ${num(f.awayBlendedRPG)}) ajustado por el ERA de cada abridor (local ${num(f.homeEra)}, visitante ${num(f.awayEra)}) y el factor ofensivo de cada lineup contra la mano rival (local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x). Terminaron anotando ${num(p.actual_value, 0)}.${scoreLine}`;
+    return `El modelo proyectó ${num(p.projected_value, 1)} carreras combinadas (equivalente a esperar al menos ${threshold}), usando el promedio de carreras de cada equipo (local ${num(f.homeBlendedRPG)}, visitante ${num(f.awayBlendedRPG)}) ajustado por el ERA de cada abridor (local ${num(f.homeEra)}, visitante ${num(f.awayEra)}), el factor ofensivo de cada lineup contra la mano rival (local ${num(f.homeOffensiveFactor)}x, visitante ${num(f.awayOffensiveFactor)}x) y el factor de parque para carreras (${num(f.runParkFactor)}x). Terminaron anotando ${num(p.actual_value, 0)}.${scoreLine}`;
   }
   if (p.market === 'pitcher_strikeouts') {
     const threshold = impliedThreshold(p.projected_value);

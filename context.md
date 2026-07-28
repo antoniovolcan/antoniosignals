@@ -11,7 +11,7 @@
 | **URL producción** | `https://mlb-telegram-signals.vercel.app` |
 | **Dashboard de backtest** | `https://mlb-telegram-signals.vercel.app/backtest/` — protegido con `DASHBOARD_SECRET` (guardado en localStorage del navegador) |
 | **Stack** | Node.js (ESM), Vercel serverless, Supabase (Postgres), Telegram Bot API, The Odds API, MLB Stats API (`statsapi.mlb.com`) |
-| **Tests** | `npm test` → `node --test lib/**/*.test.js` (208 tests, solo lógica pura, sin red) |
+| **Tests** | `npm test` → `node --test lib/**/*.test.js` (219 tests, solo lógica pura, sin red) |
 | **Git** | Antonio Volcan / soyvolcom@gmail.com. Commits directos a `master` (proyecto personal, sin PRs) |
 | **Regla** | Cada cambio: implementar → testear → `git push` → `vercel --prod --yes` → verificar con datos reales |
 
@@ -43,7 +43,7 @@ lib/
   odds.js             # cliente The Odds API (incluye extractMarket, exportado para mercados no-featured como F5)
   db.js               # cliente Supabase (todas las queries, incluye paginación >1000 filas)
   telegram.js         # sendTelegramMessage, sendTelegramDocument (multipart)
-  parkFactors.js       # tabla estática de factor de parque para ponches
+  parkFactors.js       # tablas estáticas de factor de parque: ponches (STRIKEOUT_PARK_FACTORS) y carreras (RUN_PARK_FACTORS)
   battingLedger.js     # libreta acumulada de stats reales bateador-vs-mano desde jugada-por-jugada (usada solo por el backtest)
   missAnalysis.js       # post-mortem de un fallo: trae jugada-por-jugada real y explica qué bateador lo causó
   backtestMetrics.js    # agregación de métricas (bias/MAE/RMSE/accuracy/Brier) sobre backtest_predictions
@@ -102,7 +102,7 @@ docs/
 
 **Moneyline**: ERA temporada+reciente (60/40, clamp de ratio 0.4-2.2 — antes sin clamp, un ERA de muestra chica podía disparar proyecciones absurdas), **récord de equipo blendeado (últimos 15 + temporada completa, 30/70 — ver abajo)**, localía, y **factor ofensivo individual por bateador** (ver abajo). Log5, cada equipo clampeado 30-70%, y desde esta sesión la probabilidad final pasa por un **encogimiento (shrinkage) hacia 0.5** (`calibrateWinProbability`/`MONEYLINE_CALIBRATION_SHRINK = 0.5` en `signals.js`) — ver "Calibración y filtro de confianza" más abajo.
 
-**Totales** (partido completo y **1ras 5 entradas**, nuevo esta sesión): mismo ERA clampeado + carreras/partido (temporada+15 días, 60/40) × factor ofensivo. F5 escala la misma fórmula a base de 5 entradas (5/9) en vez de modelar bullpen directamente.
+**Totales** (partido completo y **1ras 5 entradas**): mismo ERA clampeado + carreras/partido (temporada+15 días, 60/40) × factor ofensivo × **factor de parque para carreras** (nuevo, ver abajo). F5 escala la misma fórmula a base de 5 entradas (5/9) en vez de modelar bullpen directamente. Ambos pasan por un **encogimiento hacia un punto de gravedad ajustado por parque** (`calibrateProjectedTotal`/`TOTALS_CALIBRATION_SHRINK = 0.8`, mismo mecanismo que moneyline).
 
 **Ponches del pitcher**: K/9 temporada+reciente, innings reales (ajustados a la baja si el pitcher tiene mal ERA contra ofensiva fuerte — riesgo de salida corta, **dampening de 50% desde esta sesión** vía `EARLY_HOOK_RISK_SCALE = 0.5`, ver abajo), tasa de ponches + mezcla poder/contacto del lineup rival (todavía **promedio de equipo**, no individual — candidato a mejorar), factor de parque y clima (mejor esfuerzo).
 
@@ -125,6 +125,16 @@ docs/
 3. **`MIN_MONEYLINE_CONFIDENCE = 0.08`** (`isConfidentEnough`, gate nuevo en `scan.js` para moneyline, apilado **encima** de `edge_threshold`, no en su reemplazo): validado que restringir a predicciones donde el modelo está a ≥8% de distancia de 50/50 sube el accuracy crudo de 54.4% a ~55.6% quedándose con ~48% de los partidos (la curva completa: ≥6%→55.4%@61%, ≥10%→56.1%@37%, ≥15%→59.1%@13% — mejora real pero modesta, no hay un salto grande escondido).
 
 **Ojo — señales reales en producción (muestra chica, no concluyente todavía)**: al revisar `signals` calificadas en Supabase, totales tiene 72.9% de acierto real (n=181, muy bien), pero moneyline 46.3% (n=41) y ponches 42.9% (n=21) — **peor** que el accuracy crudo del backtest sin filtrar. Con muestras tan chicas puede ser ruido, pero es una señal a vigilar con más datos acumulados antes de sacar conclusiones sobre si el filtro de edge le sirve a esos dos mercados.
+
+**Análisis de pies a cabeza + 3 fixes nuevos (validado con la temporada 2025 completa, run #33 baseline → run #36 con los 3 fixes)**: se pidió una revisión completa del modelo buscando bugs y patrones nuevos. Encontrados y corregidos:
+
+1. **Bug preexistente (no de esta sesión): ERA/K9 crudo sin clamp en el origen** — el clamp de ratio 0.4x-2.2x ya existía, pero solo protegía los cálculos downstream (`projectedTotalRuns`, `pitcherFactor`, `adjustedInningsForEarlyHookRisk`), nunca el valor crudo de `homeEra`/`ownEra` que se guarda en `factors` y se muestra en el texto real de Telegram. Encontrados 25 de 4,848 predicciones de ponches (0.5%, todas en la primera semana de abril con 1-2 arranques de muestra) con ERAs de **29-65** en pitchers reales (Nestor Cortes, Bailey Ober, etc.) — las probabilidades finales nunca se vieron afectadas (confirmado: ninguna predicción de moneyline se acerca a los límites), pero el mensaje real se hubiera visto roto. Corregido clampeando en el origen (`computeRecentEra`/`computeSeasonEra`/`extractStrikeoutsPer9`/`computeRecentStrikeoutsPer9` en `mlb.js`, mismo rango 1.6-8.8 para ERA y nuevo 3.0-16.0 para K/9) — matemáticamente un no-op para todo lo que ya pasaba por los clamps downstream, solo arregla la visualización/almacenamiento.
+2. **Totales necesitaba el mismo shrinkage que moneyline** — bias por magnitud de proyección era monótono y limpio (proyección <7.5: +1.13 de sesgo; 10.5+: -1.82). `calibrateProjectedTotal`/`TOTALS_CALIBRATION_SHRINK = 0.8` encoge hacia un punto de gravedad (no un promedio fijo, para no des-ajustar el factor de parque de abajo). Resultado: bias de totales -0.233→**-0.108**, F5 -0.072→**-0.004** (casi perfecto), MAE mejoró en ambos.
+3. **Factor de parque para carreras — no existía, solo para ponches** — Colorado Rockies tenía el bias más alto de las 30 franquicias en totales (+1.79 carreras sub-proyectadas, el efecto Coors Field real). `RUN_PARK_FACTORS` en `parkFactors.js` (Coors 1.18, el más alto; San Francisco 0.91, el más bajo — tabla estática basada en factores de parque reales conocidos, mismo estilo que `STRIKEOUT_PARK_FACTORS`), aplicado en `projectedTotalRuns`/`projectedFirstFiveInningsRuns`. Resultado: bias de Colorado bajó de **+1.79 a +0.24** (-86%).
+
+Moneyline y ponches quedaron prácticamente sin cambio (esperado, ninguno de los 3 fixes los toca de fondo).
+
+**Patrones encontrados pero no atacados todavía (candidatos para la próxima sesión)**: calibración de moneyline mejoró pero no se cerró del todo (favorito visitante <40% real ~50.6% vs. predicho ~37-43%); bullpen no se usa en ninguna señal; K-rate individual del lineup rival en ponches (la libreta `battingLedger.js` ya existe para OPS, se podría extender); clima solo se aplica a ponches, no a totales; sin ajuste por descanso/fatiga del pitcher/equipo; OPS de carrera del bateador sigue sin implementar.
 
 **Factor ofensivo — la pieza que más cambió esta sesión**: en vez de promediar el OPS de los 5 titulares contra la mano del pitcher (como al principio), ahora:
 1. Se evalúan **9 bateadores** (lineup completo), cada uno con su OPS vs.-esa-mano mezclado 50/50 con su OPS general (para no confiar ciegamente en muestra chica de una sola temporada).
@@ -193,7 +203,7 @@ La temporada 2025 en esta base de datos va del 18 de marzo al 28 de septiembre. 
 ## Cómo retomar en una sesión nueva
 
 1. Lee este archivo. `docs/MODEL_INPUTS.md` está desactualizado, mejor revisar `lib/signals.js` y `scripts/backtest.js` directamente para el estado real del modelo.
-2. `cd C:\Users\anton\OneDrive\Escritorio\MLB && npm test` — deben pasar 208 tests.
+2. `cd C:\Users\anton\OneDrive\Escritorio\MLB && npm test` — deben pasar 219 tests.
 3. Para ver el estado del modelo con datos reales: entra al dashboard (`/backtest/`, secreto en `.env` como `DASHBOARD_SECRET`) y revisa las corridas de mayo/junio/julio (las más recientes con la config actual).
 4. Para correr un backtest nuevo: `node --env-file=.env scripts/backtest.js <inicio> <fin> "nota"`. Tarda varios minutos por el calentamiento de la libreta de bateo.
 5. Para analizar fallos en bulk: `node --env-file=.env scripts/analyze-misses.js <runId> [--market=X] [--limit=N]`.

@@ -22,7 +22,7 @@ import {
   CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
   TEAM_RECORD_RECENT_WEIGHT,
 } from '../lib/signals.js';
-import { getStrikeoutParkFactor } from '../lib/parkFactors.js';
+import { getStrikeoutParkFactor, getRunParkFactor } from '../lib/parkFactors.js';
 import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
@@ -227,9 +227,11 @@ export async function runScan({ force = false } = {}) {
         await recordSignal(db, { gamePk: game.gamePk, market: 'moneyline', selection: team, price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, existingSignalId });
       }
 
+      const runParkFactor = getRunParkFactor(game.homeTeam);
       const projectedTotal = projectedTotalRuns({
         home: { runsPerGame: homeBlendedRunsPerGame * homeOffensiveFactor, startingPitcherEra: homeBlendedEra },
         away: { runsPerGame: awayBlendedRunsPerGame * awayOffensiveFactor, startingPitcherEra: awayBlendedEra },
+        parkFactor: runParkFactor,
       });
       for (const side of ['Over', 'Under']) {
         const line = findTotalsLine(oddsEvent.totals, side);
@@ -241,7 +243,7 @@ export async function runScan({ force = false } = {}) {
         const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals', `${side} ${line.point}`);
         if (!force && existingSignalId) continue;
 
-        const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Combina el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}), el promedio de carreras de cada ofensiva combinando temporada completa y últimos 15 días (${game.homeTeam}: ${homeBlendedRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayBlendedRunsPerGame.toFixed(2)}), y qué tan bien batea el lineup titular de cada equipo contra la mano del pitcher rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
+        const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Combina el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}), el promedio de carreras de cada ofensiva combinando temporada completa y últimos 15 días (${game.homeTeam}: ${homeBlendedRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayBlendedRunsPerGame.toFixed(2)}), y qué tan bien batea el lineup titular de cada equipo contra la mano del pitcher rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} Factor de parque para carreras en ${game.homeTeam}: ${runParkFactor.toFixed(2)}x. La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
         const message = formatSignalMessage({
           matchup: `${game.awayTeam} @ ${game.homeTeam}`,
           market: 'Totals',
@@ -271,6 +273,7 @@ export async function runScan({ force = false } = {}) {
             const projectedF5Total = projectedFirstFiveInningsRuns({
               home: { runsPerGame: homeBlendedRunsPerGame * homeOffensiveFactor, startingPitcherEra: homeBlendedEra },
               away: { runsPerGame: awayBlendedRunsPerGame * awayOffensiveFactor, startingPitcherEra: awayBlendedEra },
+              parkFactor: runParkFactor,
             });
             for (const side of ['Over', 'Under']) {
               const line = findTotalsLine(f5Market, side);
@@ -282,7 +285,7 @@ export async function runScan({ force = false } = {}) {
               const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals_f5', `${side} ${line.point}`);
               if (!force && existingSignalId) continue;
 
-              const reasoning = `El modelo proyecta ${projectedF5Total.toFixed(1)} carreras combinadas en las primeras 5 entradas (antes de que entre el bullpen de cualquiera de los dos equipos), usando el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}) y el factor ofensivo de cada lineup contra la mano rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} La casa puso la línea de primeras 5 entradas en ${line.point}. Como la proyección queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over' : 'Under'}.`;
+              const reasoning = `El modelo proyecta ${projectedF5Total.toFixed(1)} carreras combinadas en las primeras 5 entradas (antes de que entre el bullpen de cualquiera de los dos equipos), usando el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}) y el factor ofensivo de cada lineup contra la mano rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} Factor de parque para carreras en ${game.homeTeam}: ${runParkFactor.toFixed(2)}x. La casa puso la línea de primeras 5 entradas en ${line.point}. Como la proyección queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over' : 'Under'}.`;
               const message = formatSignalMessage({
                 matchup: `${game.awayTeam} @ ${game.homeTeam}`,
                 market: 'Totales 1ras 5 entradas',
