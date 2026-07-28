@@ -16,7 +16,7 @@ import {
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes, extractMarket } from '../lib/odds.js';
 import {
   moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns, overProbability, overProbabilityProp,
-  impliedProbability, edge, isSignal, formatSignalMessage,
+  impliedProbability, edge, isSignal, isConfidentEnough, formatSignalMessage,
   expectedPitcherStrikeouts, blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS,
   computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
   CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
@@ -196,6 +196,7 @@ export async function runScan({ force = false } = {}) {
         const implied = impliedProbability(price);
         const edgeValue = edge(prob, implied);
         if (!isSignal(prob, implied, threshold)) continue;
+        if (!isConfidentEnough(prob)) continue;
         const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'moneyline', team);
         if (!force && existingSignalId) continue;
 
