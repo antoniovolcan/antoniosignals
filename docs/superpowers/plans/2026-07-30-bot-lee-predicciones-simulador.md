@@ -55,7 +55,7 @@ export async function getSimPrediction(db, date, homeTeam, awayTeam) {
 - [ ] **Step 2: Verify nothing else broke**
 
 Run: `npm test`
-Expected: PASS — 225 tests (unchanged; this task adds no tests of its own, see rationale above)
+Expected: PASS — 219 tests (unchanged; this task adds no tests of its own, see rationale above)
 
 - [ ] **Step 3: Commit**
 
@@ -151,7 +151,7 @@ export function formatSimComparisonNote(simPrediction, botFavoredTeam) {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `npm test`
-Expected: PASS — 229 tests (225 previous + 4 new)
+Expected: PASS — 223 tests (219 previous + 4 new)
 
 - [ ] **Step 5: Commit**
 
@@ -250,7 +250,7 @@ to append `formatSimComparisonNote(simPrediction, team)`:
 - [ ] **Step 4: Verify nothing broke**
 
 Run: `npm test`
-Expected: PASS — 229 tests (unchanged from Task 2, this task adds no new unit tests)
+Expected: PASS — 223 tests (unchanged from Task 2, this task adds no new unit tests)
 
 - [ ] **Step 5: Commit**
 
