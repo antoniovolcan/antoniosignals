@@ -1,6 +1,6 @@
 // api/nightly-report.js
 import { createDbClient, getUngradedSignalsForDate, markSignalGraded, upsertGameResult, getGameInfo } from '../lib/db.js';
-import { fetchGameLinescore, extractFinalScore, fetchGameBoxscore, extractPlayerBattingHits, extractPlayerPitchingStrikeouts } from '../lib/mlb.js';
+import { fetchGameLinescore, extractFinalScore, fetchGameBoxscore, extractPlayerBattingHits, extractPlayerPitchingStrikeouts, mlbDateToday, addDaysToDateString } from '../lib/mlb.js';
 import { gradeMoneylineSignal, gradeTotalsSignal, gradeOverSignal } from '../lib/signals.js';
 import { sendTelegramMessage, sendTelegramDocument } from '../lib/telegram.js';
 
@@ -12,9 +12,7 @@ const MARKET_LABELS = {
 };
 
 function yesterdayDateString() {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - 1);
-  return d.toISOString().slice(0, 10);
+  return addDaysToDateString(mlbDateToday(), -1);
 }
 
 export async function runNightlyReport(date = yesterdayDateString()) {

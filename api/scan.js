@@ -12,6 +12,7 @@ import {
   fetchTeamSeasonHitting, fetchTeamRecentHitting, extractRunsPerGame, extractOpsFromHittingStats,
   fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   fetchGameFeed, extractWeather, extractPowerContactProfile,
+  mlbDateToday, addDaysToDateString,
 } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes, extractMarket } from '../lib/odds.js';
 import {
@@ -100,22 +101,9 @@ async function computeLineupOpsVsHand(lineup, hand) {
   return computeLineupOps({ batterOpsList, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 }
 
-// The other project (an MLB simulator) uploads its predictions keyed by the
-// MLB "game day" in US Eastern time, not UTC or whatever timezone this
-// function happens to run in. Using `today` (UTC, see below) for that lookup
-// specifically would silently miss for several hours every evening --
-// confirmed live: at one point UTC had already rolled to the next calendar
-// day while Eastern time (and the simulator's own upload) was still on the
-// correct one. Scoped to just this one lookup so it doesn't touch the
-// UTC-based `today` the rest of this function already depends on
-// (schedule fetching, signal dedup, grading), which is validated behavior.
-function mlbDateToday() {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date());
-}
-
 export async function runScan({ force = false } = {}) {
   const db = createDbClient();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = mlbDateToday();
   const threshold = Number(await getConfigValue(db, 'edge_threshold', '0.05'));
 
   const [scheduleRaw, oddsRaw] = await Promise.all([
@@ -219,7 +207,7 @@ export async function runScan({ force = false } = {}) {
       });
       const awayWinProb = 1 - homeWinProb;
 
-      const simPrediction = await getSimPrediction(db, mlbDateToday(), game.homeTeam, game.awayTeam);
+      const simPrediction = await getSimPrediction(db, today, game.homeTeam, game.awayTeam);
 
       for (const [team, prob] of [[game.homeTeam, homeWinProb], [game.awayTeam, awayWinProb]]) {
         const price = findTeamPrice(oddsEvent.h2h, team);

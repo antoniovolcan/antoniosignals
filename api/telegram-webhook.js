@@ -1,6 +1,6 @@
 // api/telegram-webhook.js
 import { createDbClient, setConfigValue } from '../lib/db.js';
-import { fetchSchedule, parseScheduleGames } from '../lib/mlb.js';
+import { fetchSchedule, parseScheduleGames, mlbDateToday } from '../lib/mlb.js';
 import { sendTelegramMessage } from '../lib/telegram.js';
 import { runScan } from './scan.js';
 
@@ -17,7 +17,7 @@ export default async function handler(req, res) {
 
   try {
     if (text === '/hoy') {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = mlbDateToday();
       const games = parseScheduleGames(await fetchSchedule(today));
       const lines = games.map(g => `${g.awayTeam} @ ${g.homeTeam} — ${STATUS_LABEL[g.status]}`);
       const reply = lines.length ? lines.join('\n') : 'No hay juegos de MLB hoy.';
@@ -31,7 +31,7 @@ export default async function handler(req, res) {
       );
     } else if (text.startsWith('/partido ')) {
       const query = text.slice('/partido '.length).trim().toLowerCase();
-      const today = new Date().toISOString().slice(0, 10);
+      const today = mlbDateToday();
       const games = parseScheduleGames(await fetchSchedule(today));
       const match = games.find(g => g.homeTeam.toLowerCase().includes(query) || g.awayTeam.toLowerCase().includes(query));
       if (!match) {
