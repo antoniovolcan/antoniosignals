@@ -4,7 +4,7 @@
 
 | | |
 |---|---|
-| **Qué es** | Bot de Telegram personal que cruza stats de MLB con cuotas de casa de apuestas y manda señales de valor (moneyline, totales, totales 1ras 5 entradas, ponches de pitcher). No manda señales de hits de bateador (se quitó a propósito). |
+| **Qué es** | Bot de Telegram personal que cruza stats de MLB con cuotas de casa de apuestas y manda señales de valor (moneyline, totales, totales 1ras 5 entradas). No manda señales de hits de bateador ni de ponches de pitcher (ambas se quitaron a propósito — hits desde el inicio, ponches el 2026-08-01 por demasiada varianza, esencialmente un coinflip). |
 | **Repo local** | `C:\Users\anton\OneDrive\Escritorio\MLB` |
 | **GitHub** | `https://github.com/antoniovolcan/antoniosignals` (rama `master`) |
 | **Deploy** | Vercel, proyecto `antoniovolcans-projects/mlb-telegram-signals`, plan **Hobby (gratis)** — límite duro de 10s por función |
@@ -51,7 +51,7 @@ lib/
   *.test.js            # tests unitarios de las funciones puras, sin red
 
 api/
-  scan.js               # cron principal: analiza juegos del día, genera y guarda señales, manda documento .txt agrupado
+  scan.js               # cron principal: analiza juegos del día (moneyline, totales, totales F5), genera y guarda señales, manda documento .txt agrupado
   telegram-webhook.js   # comandos: /hoy /senales /partido /config edge
   nightly-report.js     # corre de madrugada: califica señales de ayer vs resultado real, manda reporte
   backtest-data.js      # API del dashboard: runs/summary/detail (protegido con DASHBOARD_SECRET)
@@ -116,8 +116,6 @@ Otro proyecto (no este repo) corre un simulador Monte Carlo y escribe sus predic
 
 **Totales** (partido completo y **1ras 5 entradas**): mismo ERA (temporada+reciente+carrera) × carreras/partido (temporada+15 días, 60/40) × factor ofensivo × **factor de parque para carreras** (`RUN_PARK_FACTORS` en `parkFactors.js`, Coors 1.18 el más alto, San Francisco 0.91 el más bajo). F5 escala la misma fórmula a base de 5 entradas (5/9). Ambos pasan por un **encogimiento hacia un punto de gravedad ajustado por parque** (`calibrateProjectedTotal`/`TOTALS_CALIBRATION_SHRINK = 0.8`) por el mismo problema de sobreconfianza que moneyline (proyecciones bajas se quedaban cortas, altas se pasaban). **Bullpen NO se usa** — se probó y se descartó (ver "Experimentos descartados" abajo).
 
-**Ponches del pitcher**: K/9 temporada+reciente+carrera (`CAREER_K9_WEIGHT = 0.6`, 40% carrera — más peso que el ERA porque no mostró reversión al subirlo), innings reales ajustados a la baja si el pitcher tiene mal ERA contra ofensiva fuerte (`EARLY_HOOK_RISK_SCALE = 0.5`, dampeado porque sub-proyectaba ponches de pitchers de mal ERA — mejoró pero no se cerró del todo, candidato a bajar más), tasa de ponches + mezcla poder/contacto del lineup rival (todavía **promedio de equipo**, no individual), factor de parque y clima.
-
 **Factor ofensivo (moneyline + totales/F5)**: por cada uno de los 9 bateadores del lineup titular, se blendea su OPS vs.-la-mano-del-pitcher-rival con su OPS general de temporada (50/50). Esos 9 valores se combinan dándole 70% de peso a los 2 bateadores más peligrosos y 30% al resto del lineup (`computeLineupOps`, `topN=2, topWeight=0.7`) — un esquema alternativo (top-3/50%, mano 30/70, o agregar AVG/K-rate) se probó y **no mostró ninguna mejora** una vez recalibrado correctamente (ver abajo). El resultado se compara contra `LEAGUE_AVG_TOP_WEIGHTED_OPS = 0.840` (no 0.720 — recalibrado a mano porque el esquema top-N infla el número para casi cualquier lineup).
 
 **ERA/K9 de carrera** (pitcher): suma de todas las temporadas regulares anteriores a la actual (vía `stats=yearByYear` de MLB), excluye deliberadamente la temporada en curso para ser el mismo dato en vivo y en el backtest. Si el pitcher es novato, el componente se omite (no se inventa reemplazo). **Trampa real**: un trade a mitad de temporada devuelve la temporada 2-3 veces en la API (una fila por equipo + una combinada) — hay que deduplicar quedándose solo con la combinada (`dedupSeasonSplits` en `mlb.js`).
@@ -126,13 +124,14 @@ Otro proyecto (no este repo) corre un simulador Monte Carlo y escribe sus predic
 
 **Data que NO se usa todavía**: bullpen (probado, descartado), OPS/AVG/K-rate de carrera del bateador, umpire, descanso/fatiga.
 
+**Ponches del pitcher — señal quitada (2026-08-01)**: se ofrecía como mercado (K/9 temporada+reciente+carrera, innings ajustados por riesgo de salida temprana, tasa de ponches del lineup rival, parque, clima) pero se descontinuó por decisión del usuario: demasiada varianza partido a partido, esencialmente un coinflip pese al modelo. Se eliminó el código de proyección (`expectedPitcherStrikeouts` y todo lo que solo alimentaba esa señal en `signals.js`/`mlb.js`/`parkFactors.js`), el envío de señales en `scan.js`, la calificación en `nightly-report.js`, el post-mortem en `missAnalysis.js`, las métricas en `backtestMetrics.js`, el backtest en `scripts/backtest.js`, y la columna/gráfica en el dashboard. Si se quisiera reintroducir, habría que reconstruir esa parte desde cero — no quedó código muerto a propósito.
+
 ---
 
 ## Bugs reales corregidos (ya no deberían regresar, avisar si algo se ve raro)
 
 - Pretemporada colándose como juegos reales (`gameType=R` faltante).
-- ERA/AVG sin límite en muestras chicas — podían disparar proyecciones absurdas (ej. ERA de 65 con 1 mal arranque). Clamp agregado en el origen (`mlb.js`: `computeRecentEra`, `computeSeasonEra`, `extractStrikeoutsPer9`, `computeRecentStrikeoutsPer9`, `extractBattingAvgAndPA`) — las probabilidades finales nunca se vieron afectadas (ya había clamps downstream), pero el texto/factors guardados sí mostraban números rotos.
-- Swap de rival en ponches, solo en el backtest (el pitcher local usaba stats de su propio equipo en vez del rival).
+- ERA/AVG sin límite en muestras chicas — podían disparar proyecciones absurdas (ej. ERA de 65 con 1 mal arranque). Clamp agregado en el origen (`mlb.js`: `computeRecentEra`, `computeSeasonEra`, `extractBattingAvgAndPA`) — las probabilidades finales nunca se vieron afectadas (ya había clamps downstream), pero el texto/factors guardados sí mostraban números rotos.
 - Fecha "hoy" en UTC en vez de Eastern — desincronizaba el bot varias horas cada noche (ver sección Timezone arriba).
 - Dedup de totales roto, moneyline con probabilidades irreales, falsos aciertos en reporte nocturno por `line` faltante, fallos silenciosos en Telegram sin avisar (sesiones muy anteriores).
 
@@ -141,7 +140,7 @@ Otro proyecto (no este repo) corre un simulador Monte Carlo y escribe sus predic
 - **"Equipos irregulares" excluidos del bot**: descartado — investigado a fondo (varianza, sesgo, qué tan parejos). Reconfirmado múltiples veces que el accuracy-por-equipo-en-un-período es ruido de muestra chica, no una característica real (ej. Pittsburgh #2 en toda la temporada 2025 pero último en junio 2026; Chicago Cubs #1 en junio y último en julio). **No usar accuracy por equipo para decidir nada del modelo.**
 - **Pesos alternativos del factor ofensivo** (top-3/50% en vez de top-2/70%, mano 30/70 en vez de 50/50, agregar AVG/K-rate): sin recalibrar `LEAGUE_AVG_TOP_WEIGHTED_OPS` empeoraba todo; recalibrado correctamente, rindió **prácticamente idéntico** al esquema actual (todo dentro del ruido de un mes). No hay evidencia para cambiarlo.
 - **Bullpen en totales** (ERA de bullpen del equipo, blendeado con el del abridor por % de entradas): mejora chica en un mes se diluyó a nada en la temporada completa. La API de MLB permite aislar el bullpen (`sitCodes=rp`) pero ese filtro se ignora silenciosamente combinado con `byDateRange` — el proxy de "temporada anterior completa" (leak-free) probablemente está muy desactualizado para reflejar el bullpen actual. Si se retoma, requeriría un "bullpen ledger" desde jugada-por-jugada como `battingLedger.js`, no este proxy simple.
-- **"Pegar temporada 2025 a 2026" para abril** (`scripts/backtest-season-glue.js`, nunca aplicado al bot): mejoró métricas de abril en frío. Confirma que el problema de abril es falta de muestra, no diseño. **Pendiente decidir** si vale la pena implementarlo en vivo.
+- **"Pegar temporada 2025 a 2026" para abril** (experimento en `scripts/backtest-season-glue.js`, nunca aplicado al bot; el script se eliminó el 2026-08-01 al quitar las señales de ponches, de las que dependía gran parte de su código — el hallazgo sigue siendo válido, solo hay que reescribirlo si se retoma): mejoró métricas de abril en frío. Confirma que el problema de abril es falta de muestra, no diseño. **Pendiente decidir** si vale la pena implementarlo en vivo.
 
 ## Metodología de backtest (repetir en sesiones futuras)
 
@@ -157,13 +156,11 @@ La temporada 2025 en esta base de datos va del 18 de marzo al 28 de septiembre. 
 
 - El cron automático no re-analiza un juego "ya escaneado hoy" el resto del día (`/senales` sí).
 - ~30-40 llamadas a la API de MLB por partido — riesgo de timeout en Vercel Hobby (10s), mitigado con `last_scanned_at`.
-- Ponches usa promedio de equipo para el rival, no individual (sí se usa para moneyline/totales vía `battingLedger.js`) — candidato a extender.
-- Clima solo se aplica a ponches, no a totales.
 - Sin ajuste por descanso/fatiga del pitcher/equipo.
 - Umpire no implementado.
 - `docs/MODEL_INPUTS.md` desactualizado — no confiar sin revisar el código real.
 - Cuota de The Odds API se agota fácil — el backtest no la toca, pero `runScan()`/`/senales` sí.
-- **Muestra chica en producción real** (`signals` en Supabase): totales 72.9% de acierto real (n=181, bien), pero moneyline 46.3% (n=41) y ponches 42.9% (n=21) — peor que el accuracy crudo del backtest. Vigilar con más datos acumulados antes de sacar conclusiones sobre si el filtro de edge les sirve.
+- **Muestra chica en producción real** (`signals` en Supabase): totales 72.9% de acierto real (n=181, bien), pero moneyline 46.3% (n=41) — peor que el accuracy crudo del backtest. Vigilar con más datos acumulados antes de sacar conclusiones sobre si el filtro de edge les sirve.
 
 ## Cómo retomar en una sesión nueva
 

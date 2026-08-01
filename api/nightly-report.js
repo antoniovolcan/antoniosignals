@@ -1,6 +1,6 @@
 // api/nightly-report.js
 import { createDbClient, getUngradedSignalsForDate, markSignalGraded, upsertGameResult, getGameInfo } from '../lib/db.js';
-import { fetchGameLinescore, extractFinalScore, fetchGameBoxscore, extractPlayerBattingHits, extractPlayerPitchingStrikeouts, mlbDateToday, addDaysToDateString } from '../lib/mlb.js';
+import { fetchGameLinescore, extractFinalScore, fetchGameBoxscore, extractPlayerBattingHits, mlbDateToday, addDaysToDateString } from '../lib/mlb.js';
 import { gradeMoneylineSignal, gradeTotalsSignal, gradeOverSignal } from '../lib/signals.js';
 import { sendTelegramMessage, sendTelegramDocument } from '../lib/telegram.js';
 
@@ -8,7 +8,6 @@ const MARKET_LABELS = {
   moneyline: 'Moneyline',
   totals: 'Totales',
   player_prop: 'Hits bateador',
-  pitcher_strikeouts: 'Ponches pitcher',
 };
 
 function yesterdayDateString() {
@@ -55,18 +54,16 @@ export async function runNightlyReport(date = yesterdayDateString()) {
         hit = gradeTotalsSignal({ selection: signal.selection, line: signal.line, homeScore: score.home, awayScore: score.away });
         if (hit === null) continue;
         actualValue = `${score.home + score.away} carreras`;
-      } else if (signal.market === 'player_prop' || signal.market === 'pitcher_strikeouts') {
+      } else if (signal.market === 'player_prop') {
         if (!boxscoreCache.has(signal.game_pk)) {
           boxscoreCache.set(signal.game_pk, await fetchGameBoxscore(signal.game_pk));
         }
         const boxscore = boxscoreCache.get(signal.game_pk);
-        const actual = signal.market === 'player_prop'
-          ? extractPlayerBattingHits(boxscore, signal.subject_id)
-          : extractPlayerPitchingStrikeouts(boxscore, signal.subject_id);
+        const actual = extractPlayerBattingHits(boxscore, signal.subject_id);
         if (actual == null) continue;
         hit = gradeOverSignal({ line: signal.line, actualValue: actual });
         if (hit === null) continue;
-        actualValue = signal.market === 'player_prop' ? `${actual} hits` : `${actual} ponches`;
+        actualValue = `${actual} hits`;
       } else {
         continue;
       }

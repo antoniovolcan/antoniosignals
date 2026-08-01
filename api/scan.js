@@ -3,27 +3,24 @@ import { createDbClient, upsertGame, getTodaysSignalId, insertSignal, updateSign
 import {
   fetchSchedule, parseScheduleGames,
   fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName,
-  fetchPitcherYearByYearStats, computeCareerEraBeforeSeason, computeCareerK9BeforeSeason,
+  fetchPitcherYearByYearStats, computeCareerEraBeforeSeason,
   fetchTeamRoster, parseRoster,
   fetchBatterSeasonStats,
-  fetchPitcherSeasonStats, extractStrikeoutsPer9, extractInningsPerStart, computeRecentStrikeoutsPer9,
   fetchPersonInfo, extractPitchHand,
-  extractTeamStrikeoutRate, fetchBatterHittingVsHand, computeAverageStrikeoutRate,
+  fetchBatterHittingVsHand,
   fetchTeamSeasonHitting, fetchTeamRecentHitting, extractRunsPerGame, extractOpsFromHittingStats,
   fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
-  fetchGameFeed, extractWeather, extractPowerContactProfile,
   mlbDateToday, addDaysToDateString,
 } from '../lib/mlb.js';
-import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, parsePlayerPropOutcomes, extractMarket } from '../lib/odds.js';
+import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, extractMarket } from '../lib/odds.js';
 import {
-  moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns, overProbability, overProbabilityProp,
+  moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns, overProbability,
   impliedProbability, edge, isSignal, isConfidentEnough, formatSignalMessage,
-  expectedPitcherStrikeouts, blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS,
-  computeAveragePowerContactFactor, adjustedInningsForEarlyHookRisk, computeWeatherFactorForStrikeouts,
-  CAREER_ERA_WEIGHT, CAREER_K9_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
+  blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS,
+  CAREER_ERA_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
   TEAM_RECORD_RECENT_WEIGHT, formatSimComparisonNote,
 } from '../lib/signals.js';
-import { getStrikeoutParkFactor, getRunParkFactor } from '../lib/parkFactors.js';
+import { getRunParkFactor } from '../lib/parkFactors.js';
 import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
@@ -258,135 +255,37 @@ export async function runScan({ force = false } = {}) {
       }
 
       try {
-        const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'pitcher_strikeouts,totals_1st_5_innings');
-
-        let weather = { tempF: null, windMph: 0, windDirection: '', condition: null };
-        try {
-          const feedRaw = await fetchGameFeed(game.gamePk);
-          weather = extractWeather(feedRaw);
-        } catch (err) {
-          console.error(`Failed to fetch weather for game ${game.gamePk}:`, err);
-        }
-        const weatherFactor = computeWeatherFactorForStrikeouts(weather);
-        const parkFactor = getStrikeoutParkFactor(game.homeTeam);
-
-        try {
-          const f5Market = extractMarket(propEventOdds, 'totals_1st_5_innings');
-          if (f5Market) {
-            const projectedF5Total = projectedFirstFiveInningsRuns({
-              home: { runsPerGame: homeBlendedRunsPerGame * homeOffensiveFactor, startingPitcherEra: homeBlendedEra },
-              away: { runsPerGame: awayBlendedRunsPerGame * awayOffensiveFactor, startingPitcherEra: awayBlendedEra },
-              parkFactor: runParkFactor,
-            });
-            for (const side of ['Over', 'Under']) {
-              const line = findTotalsLine(f5Market, side);
-              if (!line) continue;
-              const prob = side === 'Over' ? overProbability(line.point, projectedF5Total) : 1 - overProbability(line.point, projectedF5Total);
-              const implied = impliedProbability(line.price);
-              const edgeValue = edge(prob, implied);
-              if (!isSignal(prob, implied, threshold)) continue;
-              const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals_f5', `${side} ${line.point}`);
-              if (!force && existingSignalId) continue;
-
-              const reasoning = `El modelo proyecta ${projectedF5Total.toFixed(1)} carreras combinadas en las primeras 5 entradas (antes de que entre el bullpen de cualquiera de los dos equipos), usando el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}) y el factor ofensivo de cada lineup contra la mano rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} Factor de parque para carreras en ${game.homeTeam}: ${runParkFactor.toFixed(2)}x. La casa puso la línea de primeras 5 entradas en ${line.point}. Como la proyección queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over' : 'Under'}.`;
-              const message = formatSignalMessage({
-                matchup: `${game.awayTeam} @ ${game.homeTeam}`,
-                market: 'Totales 1ras 5 entradas',
-                selection: `${side} ${line.point}`,
-                price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
-              });
-
-              await recordSignal(db, { gamePk: game.gamePk, market: 'totals_f5', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: line.point, existingSignalId });
-            }
-          }
-        } catch (err) {
-          console.error(`Failed to process F5 totals for game ${game.gamePk}:`, err);
-        }
-
-        const pitcherCandidates = [
-          {
-            pitcherId: homePitcherId, pitcherName: homePitcherName, opposingRoster: awayRoster, gameLog: homeGameLog, yearByYearRaw: homeYearByYearRaw, pitchHand: homePitchHand,
-            ownEra: homeBlendedEra, opposingOffensiveFactor: awayOffensiveFactor, opposingRecentHittingRaw: awayRecentHittingRaw, opposingTeamName: game.awayTeam,
-          },
-          {
-            pitcherId: awayPitcherId, pitcherName: awayPitcherName, opposingRoster: roster, gameLog: awayGameLog, yearByYearRaw: awayYearByYearRaw, pitchHand: awayPitchHand,
-            ownEra: awayBlendedEra, opposingOffensiveFactor: homeOffensiveFactor, opposingRecentHittingRaw: homeRecentHittingRaw, opposingTeamName: game.homeTeam,
-          },
-        ];
-
-        const HAND_LABEL = { L: 'zurdo', R: 'derecho' };
-        const HAND_LABEL_PLURAL = { L: 'zurdos', R: 'derechos' };
-
-        await Promise.all(pitcherCandidates.map(async ({ pitcherId, pitcherName, opposingRoster, gameLog, yearByYearRaw, pitchHand, ownEra, opposingOffensiveFactor, opposingRecentHittingRaw, opposingTeamName }) => {
-          if (!pitcherId) return;
-          try {
-            const outcomes = parsePlayerPropOutcomes(propEventOdds, 'pitcher_strikeouts', pitcherName);
-            if (outcomes.length === 0) return;
-
-            const overOutcome = outcomes.find(o => o.name === 'Over');
-            if (!overOutcome) return;
-
-            const seasonStatsRaw = await fetchPitcherSeasonStats(pitcherId, SEASON);
-            const seasonK9 = extractStrikeoutsPer9(seasonStatsRaw);
-            const recentK9 = gameLog ? computeRecentStrikeoutsPer9(gameLog) : seasonK9;
-            const careerK9 = yearByYearRaw ? computeCareerK9BeforeSeason(yearByYearRaw, SEASON) : null;
-            const recentSeasonK9 = blendEraEstimates(recentK9, seasonK9);
-            const pitcherK9 = careerK9 == null ? recentSeasonK9 : blendEraEstimates(recentSeasonK9, careerK9, CAREER_K9_WEIGHT);
-            const pitcherInningsPerStart = extractInningsPerStart(seasonStatsRaw);
-            const batterVsHandRaws = await Promise.all(
-              opposingRoster.slice(0, 5).map(async (batter) => {
-                try {
-                  return await fetchBatterHittingVsHand(batter.personId, pitchHand, SEASON);
-                } catch (err) {
-                  return null;
-                }
-              })
-            );
-            const batterRates = batterVsHandRaws.map(raw => raw ? extractTeamStrikeoutRate(raw) : null);
-            const teamStrikeoutRate = computeAverageStrikeoutRate(batterRates);
-            const powerContactProfiles = batterVsHandRaws.map(raw => raw ? extractPowerContactProfile(raw) : null);
-            const powerContactFactor = computeAveragePowerContactFactor(powerContactProfiles);
-
-            const recentOverallKRate = extractTeamStrikeoutRate(opposingRecentHittingRaw);
-            const blendedTeamStrikeoutRate = blendEraEstimates(teamStrikeoutRate, recentOverallKRate, 0.7);
-
-            const adjustedInnings = adjustedInningsForEarlyHookRisk({ baseInnings: pitcherInningsPerStart, pitcherEra: ownEra, opposingOffensiveFactor });
-
-            const expectedK = expectedPitcherStrikeouts({
-              pitcherK9, teamStrikeoutRate: blendedTeamStrikeoutRate, expectedInnings: adjustedInnings,
-              powerContactFactor, parkFactor, weatherFactor,
-            });
-            const prob = overProbabilityProp(overOutcome.point, expectedK);
-            const implied = impliedProbability(overOutcome.price);
+        const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'totals_1st_5_innings');
+        const f5Market = extractMarket(propEventOdds, 'totals_1st_5_innings');
+        if (f5Market) {
+          const projectedF5Total = projectedFirstFiveInningsRuns({
+            home: { runsPerGame: homeBlendedRunsPerGame * homeOffensiveFactor, startingPitcherEra: homeBlendedEra },
+            away: { runsPerGame: awayBlendedRunsPerGame * awayOffensiveFactor, startingPitcherEra: awayBlendedEra },
+            parkFactor: runParkFactor,
+          });
+          for (const side of ['Over', 'Under']) {
+            const line = findTotalsLine(f5Market, side);
+            if (!line) continue;
+            const prob = side === 'Over' ? overProbability(line.point, projectedF5Total) : 1 - overProbability(line.point, projectedF5Total);
+            const implied = impliedProbability(line.price);
             const edgeValue = edge(prob, implied);
-            if (!isSignal(prob, implied, threshold)) return;
-            const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'pitcher_strikeouts', `${pitcherName} Ks`);
-            if (!force && existingSignalId) return;
+            if (!isSignal(prob, implied, threshold)) continue;
+            const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals_f5', `${side} ${line.point}`);
+            if (!force && existingSignalId) continue;
 
-            const handLabel = HAND_LABEL[pitchHand] || 'mano no confirmada';
-            const handLabelPlural = HAND_LABEL_PLURAL[pitchHand] || 'esa mano';
-            const inningsNote = adjustedInnings < pitcherInningsPerStart - 0.05
-              ? ` Como ${pitcherName} tiene un ERA de ${ownEra.toFixed(2)} (por encima del promedio) y enfrenta una ofensiva por encima del promedio, el modelo reduce sus innings esperados de ${pitcherInningsPerStart.toFixed(1)} a ${adjustedInnings.toFixed(1)} por el riesgo de que lo saquen temprano si le anotan varias carreras.`
-              : '';
-            const weatherNote = weather.tempF != null
-              ? ` Clima: ${weather.tempF}°F${weather.windMph ? `, viento ${weather.windMph} mph${weather.windDirection ? ` ${weather.windDirection}` : ''}` : ''}.`
-              : '';
-            const careerK9Note = careerK9 == null ? '' : ` (carrera: ${careerK9.toFixed(2)})`;
-            const reasoning = `${pitcherName} es ${handLabel} y tiene ${seasonK9.toFixed(2)} ponches por cada 9 innings esta temporada${careerK9Note} (${recentK9.toFixed(2)} en sus últimos 5 arranques). Se espera que lance unas ${pitcherInningsPerStart.toFixed(1)} innings, su promedio real por arranque esta temporada.${inningsNote} Evaluamos a los bateadores del último lineup usado por ${opposingTeamName} contra pitchers ${handLabelPlural}: en promedio ponchan un ${(teamStrikeoutRate * 100).toFixed(1)}% de sus turnos (liga: ${(0.223 * 100).toFixed(1)}%), y su forma reciente en general (últimos 15 días, no solo contra esta mano) da una tasa de ${(recentOverallKRate * 100).toFixed(1)}%. La mezcla de poder (jonrones) y contacto (bateadores de buen promedio que no suelen conectar jonrón) de ese lineup ajusta la proyección ${powerContactFactor >= 1 ? 'al alza' : 'a la baja'} en un ${(Math.abs(powerContactFactor - 1) * 100).toFixed(1)}%. Factor de parque para ponches en ${game.homeTeam}: ${parkFactor.toFixed(2)}x.${weatherNote} Combinando todo esto, el modelo proyecta unos ${expectedK.toFixed(1)} ponches para ${pitcherName} en este juego. La casa puso la línea en ${overOutcome.point} — como la proyección supera esa línea, el modelo ve valor en el Over.`;
+            const reasoning = `El modelo proyecta ${projectedF5Total.toFixed(1)} carreras combinadas en las primeras 5 entradas (antes de que entre el bullpen de cualquiera de los dos equipos), usando el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}) y el factor ofensivo de cada lineup contra la mano rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} Factor de parque para carreras en ${game.homeTeam}: ${runParkFactor.toFixed(2)}x. La casa puso la línea de primeras 5 entradas en ${line.point}. Como la proyección queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over' : 'Under'}.`;
             const message = formatSignalMessage({
               matchup: `${game.awayTeam} @ ${game.homeTeam}`,
-              market: 'Pitcher Strikeouts',
-              selection: `${pitcherName} Over ${overOutcome.point} Ks`,
-              price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
+              market: 'Totales 1ras 5 entradas',
+              selection: `${side} ${line.point}`,
+              price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
             });
 
-            await recordSignal(db, { gamePk: game.gamePk, market: 'pitcher_strikeouts', selection: `${pitcherName} Ks`, price: overOutcome.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: overOutcome.point, subjectId: pitcherId, existingSignalId });
-          } catch (err) {
-            console.error(`Failed to process pitcher strikeout prop for ${pitcherName} in game ${game.gamePk}:`, err);
+            await recordSignal(db, { gamePk: game.gamePk, market: 'totals_f5', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: line.point, existingSignalId });
           }
-        }));
+        }
       } catch (err) {
-        console.error(`Failed to fetch roster/props for game ${game.gamePk}:`, err);
+        console.error(`Failed to process F5 totals for game ${game.gamePk}:`, err);
       }
 
       await markGameScanned(db, game.gamePk);
