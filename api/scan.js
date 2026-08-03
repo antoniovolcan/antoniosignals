@@ -1,5 +1,5 @@
 // api/scan.js
-import { createDbClient, upsertGame, getTodaysSignalId, insertSignal, updateSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned, getSimPrediction } from '../lib/db.js';
+import { createDbClient, upsertGame, getTodaysSignalId, insertSignal, updateSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned, getSimPrediction, getUngradedSignalsForDate, getGameInfo } from '../lib/db.js';
 import {
   fetchSchedule, parseScheduleGames,
   fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName,
@@ -112,7 +112,51 @@ async function computeLineupOpsVsHand(lineup, hand) {
   return computeLineupOps({ batterOpsList, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 }
 
-export async function runScan({ force = false } = {}) {
+const MARKET_DISPLAY_LABELS = { moneyline: 'Moneyline', totals: 'Totals', totals_f5: 'Totales 1ras 5 entradas' };
+
+// Rebuilds and sends a digest of EVERY signal this bot currently has out for today (not just
+// whatever a particular scan pass happened to (re)compute) -- reads straight back from the
+// `signals` table it already writes to, so it also covers games that already started (and are no
+// longer 'scheduled', so a normal scan pass skips them entirely) as long as they haven't been
+// graded yet. Used by the /senales command, which wants "everything I've got," not "what's new."
+export async function sendAllTodaysSignals(db) {
+  const today = mlbDateToday();
+  const signals = await getUngradedSignalsForDate(db, today);
+  if (signals.length === 0) {
+    await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, `No hay señales activas hoy (${today}).`);
+    return { count: 0 };
+  }
+
+  const gameInfoCache = new Map();
+  const entries = [];
+  for (const signal of signals) {
+    if (!gameInfoCache.has(signal.game_pk)) {
+      gameInfoCache.set(signal.game_pk, await getGameInfo(db, signal.game_pk));
+    }
+    const gameInfo = gameInfoCache.get(signal.game_pk);
+    if (!gameInfo) continue;
+    const message = formatSignalMessage({
+      matchup: `${gameInfo.awayTeam} @ ${gameInfo.homeTeam}`,
+      market: MARKET_DISPLAY_LABELS[signal.market] || signal.market,
+      selection: signal.selection,
+      price: signal.odds_price,
+      impliedProb: signal.implied_prob,
+      estimatedProb: signal.estimated_prob,
+      edgeValue: signal.edge,
+      reasoning: signal.reasoning,
+    });
+    entries.push({ estimatedProb: signal.estimated_prob, message });
+  }
+
+  const sorted = entries.sort((a, b) => b.estimatedProb - a.estimatedProb);
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `senales_activas_${timestamp}.txt`;
+  const content = sorted.map(e => e.message).join('\n\n' + '='.repeat(40) + '\n\n');
+  await sendTelegramDocument(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, filename, content, `📄 ${sorted.length} señal${sorted.length === 1 ? '' : 'es'} activa${sorted.length === 1 ? '' : 's'} hoy`);
+  return { count: sorted.length };
+}
+
+export async function runScan({ force = false, sendDigest = true } = {}) {
   const db = createDbClient();
   const today = mlbDateToday();
   const threshold = Number(await getConfigValue(db, 'edge_threshold', '0.05'));
@@ -323,7 +367,7 @@ export async function runScan({ force = false } = {}) {
     }
   }
 
-  if (sentMessages.length > 0) {
+  if (sendDigest && sentMessages.length > 0) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `senales_${timestamp}.txt`;
     // Highest estimated probability first, regardless of market — a stronger read from the

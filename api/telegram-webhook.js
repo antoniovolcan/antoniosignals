@@ -2,7 +2,7 @@
 import { createDbClient, setConfigValue } from '../lib/db.js';
 import { fetchSchedule, parseScheduleGames, mlbDateToday } from '../lib/mlb.js';
 import { sendTelegramMessage } from '../lib/telegram.js';
-import { runScan } from './scan.js';
+import { runScan, sendAllTodaysSignals } from './scan.js';
 import { runSimReport } from './sim-report.js';
 
 const STATUS_LABEL = { scheduled: 'Programado', live: 'En vivo', final: 'Terminado', postponed: 'Pospuesto' };
@@ -24,11 +24,13 @@ export default async function handler(req, res) {
       const reply = lines.length ? lines.join('\n') : 'No hay juegos de MLB hoy.';
       await sendTelegramMessage(process.env.TELEGRAM_BOT_TOKEN, chatId, reply);
     } else if (text === '/senales') {
-      const result = await runScan({ force: true });
+      await runScan({ force: true, sendDigest: false });
+      const db = createDbClient();
+      const { count } = await sendAllTodaysSignals(db);
       await sendTelegramMessage(
         process.env.TELEGRAM_BOT_TOKEN,
         chatId,
-        result.signalsSent > 0 ? `Se enviaron ${result.signalsSent} señales nuevas.` : 'No se encontraron señales con edge suficiente ahora mismo.'
+        count > 0 ? `Se mandaron ${count} señales activas de hoy.` : 'No hay señales activas con edge suficiente ahora mismo.'
       );
     } else if (text === '/simulaciones') {
       await runSimReport();
