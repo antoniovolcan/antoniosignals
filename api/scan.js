@@ -12,18 +12,32 @@ import {
   fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   mlbDateToday, addDaysToDateString,
 } from '../lib/mlb.js';
-import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, fetchEventPlayerProps, extractMarket } from '../lib/odds.js';
+import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, findAllTotalsLines, fetchEventPlayerProps, extractMarket } from '../lib/odds.js';
 import {
   moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns, overProbability,
   impliedProbability, edge, isSignal, isConfidentEnough, formatSignalMessage,
   blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS,
   CAREER_ERA_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
-  TEAM_RECORD_RECENT_WEIGHT, formatSimComparisonNote,
+  TEAM_RECORD_RECENT_WEIGHT, formatSimComparisonNote, selectAlternateLine,
 } from '../lib/signals.js';
 import { getRunParkFactor } from '../lib/parkFactors.js';
 import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
 
 const SEASON = new Date().getFullYear();
+
+// Evaluates every candidate line for a side against the model's own projection (same math as the
+// single-line case, just repeated per point), keeping only the ones with real edge -- picking
+// which of those to actually bet (selectAlternateLine, by the caller) never overrides this.
+function evaluateTotalsCandidates(lines, side, projectedTotal, threshold) {
+  return lines
+    .map(line => {
+      const prob = side === 'Over' ? overProbability(line.point, projectedTotal) : 1 - overProbability(line.point, projectedTotal);
+      const implied = impliedProbability(line.price);
+      const edgeValue = edge(prob, implied);
+      return { point: line.point, price: line.price, prob, implied, edgeValue };
+    })
+    .filter(c => isSignal(c.prob, c.implied, threshold));
+}
 
 async function recordSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edgeValue, reasoning, message, sentMessages, line, subjectId, existingSignalId }) {
   try {
@@ -233,55 +247,70 @@ export async function runScan({ force = false } = {}) {
         away: { runsPerGame: awayBlendedRunsPerGame * awayOffensiveFactor, startingPitcherEra: awayBlendedEra },
         parkFactor: runParkFactor,
       });
+
+      // Alternate lines (extra points/prices beyond the one bookmaker-featured line) are only
+      // available per-event, not in the bulk odds fetch above -- one call covers both the
+      // full-game and F5 alternates. If it fails, both totals blocks below just fall back to
+      // whatever main line the bulk/F5 fetch already has.
+      let alternateOdds = null;
+      try {
+        alternateOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'alternate_totals,totals_1st_5_innings,alternate_totals_1st_5_innings');
+      } catch (err) {
+        console.error(`Failed to fetch alternate totals odds for game ${game.gamePk}:`, err);
+      }
+      const alternateTotalsMarket = alternateOdds ? extractMarket(alternateOdds, 'alternate_totals') : null;
+
       for (const side of ['Over', 'Under']) {
-        const line = findTotalsLine(oddsEvent.totals, side);
-        if (!line) continue;
-        const prob = side === 'Over' ? overProbability(line.point, projectedTotal) : 1 - overProbability(line.point, projectedTotal);
-        const implied = impliedProbability(line.price);
-        const edgeValue = edge(prob, implied);
-        if (!isSignal(prob, implied, threshold)) continue;
-        const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals', `${side} ${line.point}`);
+        const mainLine = findTotalsLine(oddsEvent.totals, side);
+        const altLines = findAllTotalsLines(alternateTotalsMarket, side);
+        const lines = mainLine ? [mainLine, ...altLines] : altLines;
+        const candidates = evaluateTotalsCandidates(lines, side, projectedTotal, threshold);
+        const chosen = selectAlternateLine(candidates);
+        if (!chosen) continue;
+        const { point, price, prob, implied, edgeValue } = chosen;
+        const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals', `${side} ${point}`);
         if (!force && existingSignalId) continue;
 
-        const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Combina el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}), el promedio de carreras de cada ofensiva combinando temporada completa y últimos 15 días (${game.homeTeam}: ${homeBlendedRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayBlendedRunsPerGame.toFixed(2)}), y qué tan bien batea el lineup titular de cada equipo contra la mano del pitcher rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} Factor de parque para carreras en ${game.homeTeam}: ${runParkFactor.toFixed(2)}x. La casa de apuestas puso la línea de total de carreras en ${line.point}. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
+        const reasoning = `El modelo proyecta que entre ambos equipos anotarán unas ${projectedTotal.toFixed(1)} carreras en este juego. Combina el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}), el promedio de carreras de cada ofensiva combinando temporada completa y últimos 15 días (${game.homeTeam}: ${homeBlendedRunsPerGame.toFixed(2)}, ${game.awayTeam}: ${awayBlendedRunsPerGame.toFixed(2)}), y qué tan bien batea el lineup titular de cada equipo contra la mano del pitcher rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} Factor de parque para carreras en ${game.homeTeam}: ${runParkFactor.toFixed(2)}x. De las líneas de totales disponibles (incluyendo alternativas), el modelo eligió la de ${point} carreras a cuota ${price.toFixed(2)} — con valor real y sin ser ni una favorita demasiado corta ni una apuesta especulativa a cuota alta. Como la proyección del modelo queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over (más carreras)' : 'Under (menos carreras)'}.`;
         const message = formatSignalMessage({
           matchup: `${game.awayTeam} @ ${game.homeTeam}`,
           market: 'Totals',
-          selection: `${side} ${line.point}`,
-          price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
+          selection: `${side} ${point}`,
+          price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
         });
 
-        await recordSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: line.point, existingSignalId });
+        await recordSignal(db, { gamePk: game.gamePk, market: 'totals', selection: `${side} ${point}`, price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: point, existingSignalId });
       }
 
       try {
-        const propEventOdds = await fetchEventPlayerProps(process.env.ODDS_API_KEY, oddsEvent.id, 'totals_1st_5_innings');
-        const f5Market = extractMarket(propEventOdds, 'totals_1st_5_innings');
-        if (f5Market) {
+        const f5Market = alternateOdds ? extractMarket(alternateOdds, 'totals_1st_5_innings') : null;
+        const alternateF5Market = alternateOdds ? extractMarket(alternateOdds, 'alternate_totals_1st_5_innings') : null;
+        if (f5Market || alternateF5Market) {
           const projectedF5Total = projectedFirstFiveInningsRuns({
             home: { runsPerGame: homeBlendedRunsPerGame * homeOffensiveFactor, startingPitcherEra: homeBlendedEra },
             away: { runsPerGame: awayBlendedRunsPerGame * awayOffensiveFactor, startingPitcherEra: awayBlendedEra },
             parkFactor: runParkFactor,
           });
           for (const side of ['Over', 'Under']) {
-            const line = findTotalsLine(f5Market, side);
-            if (!line) continue;
-            const prob = side === 'Over' ? overProbability(line.point, projectedF5Total) : 1 - overProbability(line.point, projectedF5Total);
-            const implied = impliedProbability(line.price);
-            const edgeValue = edge(prob, implied);
-            if (!isSignal(prob, implied, threshold)) continue;
-            const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals_f5', `${side} ${line.point}`);
+            const mainLine = findTotalsLine(f5Market, side);
+            const altLines = findAllTotalsLines(alternateF5Market, side);
+            const lines = mainLine ? [mainLine, ...altLines] : altLines;
+            const candidates = evaluateTotalsCandidates(lines, side, projectedF5Total, threshold);
+            const chosen = selectAlternateLine(candidates);
+            if (!chosen) continue;
+            const { point, price, prob, implied, edgeValue } = chosen;
+            const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'totals_f5', `${side} ${point}`);
             if (!force && existingSignalId) continue;
 
-            const reasoning = `El modelo proyecta ${projectedF5Total.toFixed(1)} carreras combinadas en las primeras 5 entradas (antes de que entre el bullpen de cualquiera de los dos equipos), usando el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}) y el factor ofensivo de cada lineup contra la mano rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} Factor de parque para carreras en ${game.homeTeam}: ${runParkFactor.toFixed(2)}x. La casa puso la línea de primeras 5 entradas en ${line.point}. Como la proyección queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over' : 'Under'}.`;
+            const reasoning = `El modelo proyecta ${projectedF5Total.toFixed(1)} carreras combinadas en las primeras 5 entradas (antes de que entre el bullpen de cualquiera de los dos equipos), usando el ERA de cada abridor (temporada ${homeSeasonEra.toFixed(2)}/${awaySeasonEra.toFixed(2)}, reciente ${homeEra.toFixed(2)}/${awayEra.toFixed(2)}) y el factor ofensivo de cada lineup contra la mano rival (${game.homeTeam}: ${homeLineupOps.toFixed(3)} OPS, ${game.awayTeam}: ${awayLineupOps.toFixed(3)} OPS).${formatCareerEraPairNote({ homeTeam: game.homeTeam, awayTeam: game.awayTeam, homeCareerEra, awayCareerEra })} Factor de parque para carreras en ${game.homeTeam}: ${runParkFactor.toFixed(2)}x. De las líneas de primeras 5 entradas disponibles (incluyendo alternativas), el modelo eligió la de ${point} carreras a cuota ${price.toFixed(2)} — con valor real y sin ser ni una favorita demasiado corta ni una apuesta especulativa a cuota alta. Como la proyección queda ${side === 'Over' ? 'por encima' : 'por debajo'} de esa línea, el modelo ve valor en el ${side === 'Over' ? 'Over' : 'Under'}.`;
             const message = formatSignalMessage({
               matchup: `${game.awayTeam} @ ${game.homeTeam}`,
               market: 'Totales 1ras 5 entradas',
-              selection: `${side} ${line.point}`,
-              price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
+              selection: `${side} ${point}`,
+              price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning,
             });
 
-            await recordSignal(db, { gamePk: game.gamePk, market: 'totals_f5', selection: `${side} ${line.point}`, price: line.price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: line.point, existingSignalId });
+            await recordSignal(db, { gamePk: game.gamePk, market: 'totals_f5', selection: `${side} ${point}`, price, impliedProb: implied, estimatedProb: prob, edgeValue, reasoning, message, sentMessages, line: point, existingSignalId });
           }
         }
       } catch (err) {
