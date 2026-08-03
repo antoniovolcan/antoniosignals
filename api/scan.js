@@ -32,7 +32,7 @@ async function recordSignal(db, { gamePk, market, selection, price, impliedProb,
     } else {
       await insertSignal(db, { gamePk, market, selection, price, impliedProb, estimatedProb, edge: edgeValue, reasoning, line, subjectId });
     }
-    sentMessages.push(message);
+    sentMessages.push({ estimatedProb, message });
   } catch (err) {
     console.error(`Failed to record ${market} signal for game ${gamePk}, ${selection}:`, err);
   }
@@ -297,7 +297,10 @@ export async function runScan({ force = false } = {}) {
   if (sentMessages.length > 0) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filename = `senales_${timestamp}.txt`;
-    const content = sentMessages.join('\n\n' + '='.repeat(40) + '\n\n');
+    // Highest estimated probability first, regardless of market — a stronger read from the
+    // model, not necessarily a bigger edge vs. the market's price.
+    const sorted = [...sentMessages].sort((a, b) => b.estimatedProb - a.estimatedProb);
+    const content = sorted.map(m => m.message).join('\n\n' + '='.repeat(40) + '\n\n');
     await sendTelegramDocument(process.env.TELEGRAM_BOT_TOKEN, process.env.TELEGRAM_CHAT_ID, filename, content, `📄 ${sentMessages.length} señal${sentMessages.length === 1 ? '' : 'es'} nueva${sentMessages.length === 1 ? '' : 's'}`);
   }
 
