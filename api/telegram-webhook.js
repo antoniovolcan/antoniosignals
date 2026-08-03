@@ -3,6 +3,7 @@ import { createDbClient, setConfigValue } from '../lib/db.js';
 import { fetchSchedule, parseScheduleGames, mlbDateToday } from '../lib/mlb.js';
 import { sendTelegramMessage } from '../lib/telegram.js';
 import { runScan } from './scan.js';
+import { runSimReport } from './sim-report.js';
 
 const STATUS_LABEL = { scheduled: 'Programado', live: 'En vivo', final: 'Terminado', postponed: 'Pospuesto' };
 
@@ -29,6 +30,8 @@ export default async function handler(req, res) {
         chatId,
         result.signalsSent > 0 ? `Se enviaron ${result.signalsSent} señales nuevas.` : 'No se encontraron señales con edge suficiente ahora mismo.'
       );
+    } else if (text === '/simulaciones') {
+      await runSimReport();
     } else if (text.startsWith('/partido ')) {
       const query = text.slice('/partido '.length).trim().toLowerCase();
       const today = mlbDateToday();

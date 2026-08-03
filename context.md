@@ -52,8 +52,9 @@ lib/
 
 api/
   scan.js               # cron principal: analiza juegos del día (moneyline, totales, totales F5), genera y guarda señales, manda documento .txt agrupado
-  telegram-webhook.js   # comandos: /hoy /senales /partido /config edge
+  telegram-webhook.js   # comandos: /hoy /senales /simulaciones /partido /config edge
   nightly-report.js     # corre de madrugada: califica señales de ayer vs resultado real, manda reporte
+  sim-report.js         # manda por Telegram TODAS las simulaciones del día del proyecto externo (no solo las que generan señal) — cron + /simulaciones
   backtest-data.js      # API del dashboard: runs/summary/detail (protegido con DASHBOARD_SECRET)
   backtest-analyze.js   # API del botón "¿Por qué falló?" del dashboard (protegido con DASHBOARD_SECRET)
 
@@ -90,11 +91,13 @@ docs/
 
 1. `.../api/scan?secret=<CRON_SECRET>` — cada hora
 2. `.../api/nightly-report?secret=<CRON_SECRET>` — ~madrugada
+3. `.../api/sim-report?secret=<CRON_SECRET>` — pendiente de crear en cron-job.org por el usuario; correr un poco después de que el simulador externo termine su corrida nocturna (visto escribiendo `sim_predictions` ~05:04-05:07 UTC, así que ~05:15 UTC es un margen razonable)
 
 ## Comandos de Telegram
 
 - `/hoy` — juegos del día
 - `/senales` — corre el análisis completo bajo demanda, siempre en modo `force`: re-analiza todo con datos frescos y **actualiza** (no duplica) señales ya enviadas ese día
+- `/simulaciones` — manda TODAS las simulaciones del día del proyecto externo (equipo/pitcher probable/% de victoria por lado), no solo las que generan una señal de moneyline
 - `/partido <equipo>` — estado rápido de un juego
 - `/config edge <0-1>` — umbral mínimo de edge (default 0.05)
 
@@ -106,7 +109,10 @@ MLB corre en hora Eastern (US), no UTC. `mlbDateToday()` (`lib/mlb.js`) usa `Int
 
 ## Simulador externo — integración de solo lectura
 
-Otro proyecto (no este repo) corre un simulador Monte Carlo y escribe sus predicciones de moneyline a la tabla `sim_predictions` cada noche. Este bot las lee (`getSimPrediction(db, date, homeTeam, awayTeam)` en `lib/db.js`) y agrega una nota corta al final del reasoning de moneyline (`formatSimComparisonNote` en `signals.js`): "Simulador coincide: X (63%)" o "Simulador difiere: predice Y" — puramente informativo, **no afecta el cálculo de probabilidad ni el edge**, es solo una segunda opinión mostrada en el mensaje.
+Otro proyecto (no este repo) corre un simulador Monte Carlo y escribe sus predicciones de moneyline a la tabla `sim_predictions` cada noche (confirmado escribiendo bien: pitchers probables + win% por lado + cantidad de simulaciones). Dos formas de verlo desde este bot:
+
+1. **Nota en señales de moneyline** (`getSimPrediction` + `formatSimComparisonNote` en `signals.js`): "Simulador coincide: X (63%)" o "Simulador difiere: predice Y" pegado al final del reasoning — puramente informativo, no afecta probabilidad ni edge. **Limitación conocida**: solo aparece si ESE juego generó una señal de moneyline real (edge + confianza mínima); la mayoría de los juegos simulados no la generan, así que la mayor parte de las simulaciones nunca se veían por esta vía — por eso se agregó el reporte independiente de abajo.
+2. **Reporte independiente de TODAS las simulaciones del día** (`getSimPredictionsForDate` en `db.js`, `formatSimReportMessage` en `signals.js`, `api/sim-report.js`): manda un mensaje de Telegram con cada juego simulado (equipo/pitcher probable/% por lado), sin filtrar por señal ni edge. Se dispara por cron diario (pendiente de configurar en cron-job.org, ver abajo) y por el comando `/simulaciones`.
 
 ---
 
