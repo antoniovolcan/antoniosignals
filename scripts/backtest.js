@@ -33,6 +33,7 @@ import {
   CAREER_ERA_WEIGHT, MONEYLINE_CAREER_ERA_WEIGHT, TEAM_RECORD_RECENT_WEIGHT,
 } from '../lib/signals.js';
 import { createLedger, updateLedgerFromPlateAppearances, getBatterLedgerProfile } from '../lib/battingLedger.js';
+import { createTeamLedger, updateTeamLedgerFromGame, getTeamLedgerProfile } from '../lib/teamLedger.js';
 import { getRunParkFactor } from '../lib/parkFactors.js';
 import { createDbClient, createBacktestRun, finishBacktestRun, insertBacktestPredictions } from '../lib/db.js';
 import { pathToFileURL } from 'node:url';
@@ -175,7 +176,7 @@ function computeLineupOpsFromLedger(ledger, lineup, hand) {
   return computeLineupOps({ batterOpsList, topWeight: 0.7, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 }
 
-export async function processGame(game, season, ledger) {
+export async function processGame(game, season, ledger, teamLedger) {
   const predictions = [];
   const linescoreRaw = await fetchGameLinescore(game.gamePk);
   const score = extractFinalScore(linescoreRaw);
@@ -189,6 +190,12 @@ export async function processGame(game, season, ledger) {
   ]);
   const homeRecordWinPct = homeRecord.recordWinPct;
   const awayRecordWinPct = awayRecord.recordWinPct;
+  // Instrumentation only for now (not fed into any projection yet) -- lets the Pythagorean/streak
+  // signals be tested as one-at-a-time candidates against the moneyline model without a second
+  // backtest run. null when the ledger has no games for that team yet (e.g. very early in the
+  // priming window).
+  const homeTeamLedgerProfile = teamLedger ? getTeamLedgerProfile(teamLedger, game.homeTeamId) : null;
+  const awayTeamLedgerProfile = teamLedger ? getTeamLedgerProfile(teamLedger, game.awayTeamId) : null;
 
   const homePitcherId = game.homeProbablePitcherId;
   const awayPitcherId = game.awayProbablePitcherId;
@@ -239,6 +246,10 @@ export async function processGame(game, season, ledger) {
       homeLineupOps, awayLineupOps, runParkFactor,
       homeStartsCount: homeProfile?.startsCount ?? 0, awayStartsCount: awayProfile?.startsCount ?? 0,
       homeCareerGap: homeProfile?.careerGap ?? null, awayCareerGap: awayProfile?.careerGap ?? null,
+      homePythagWinPct: homeTeamLedgerProfile?.pythagWinPct ?? null, awayPythagWinPct: awayTeamLedgerProfile?.pythagWinPct ?? null,
+      homeRecentPythagWinPct: homeTeamLedgerProfile?.recentPythagWinPct ?? null, awayRecentPythagWinPct: awayTeamLedgerProfile?.recentPythagWinPct ?? null,
+      homeStreak: homeTeamLedgerProfile?.streak ?? null, awayStreak: awayTeamLedgerProfile?.streak ?? null,
+      homeHomeWinPct: homeTeamLedgerProfile?.homeWinPct ?? null, awayAwayWinPct: awayTeamLedgerProfile?.awayWinPct ?? null,
     },
   });
 
@@ -281,15 +292,25 @@ async function fetchFinalGamesForDate(date) {
   return games.filter(g => g.status === 'final');
 }
 
-// Feeds a day's real plate appearances into the ledger — call ONLY after that day's predictions
-// have already been computed, so the ledger never leaks same-day or future information.
-async function updateLedgerWithGames(ledger, finalGames, dateLabel) {
+// Feeds a day's real plate appearances AND final scores into the two ledgers — call ONLY after
+// that day's predictions have already been computed, so neither ledger ever leaks same-day or
+// future information.
+async function updateLedgerWithGames(ledger, teamLedger, finalGames, dateLabel) {
   for (const game of finalGames) {
     try {
       const pbp = await fetchPlayByPlay(game.gamePk);
       updateLedgerFromPlateAppearances(ledger, extractPlateAppearances(pbp));
     } catch (err) {
-      console.error(`  Error actualizando la libreta con el partido ${game.gamePk} (${dateLabel}):`, err.message);
+      console.error(`  Error actualizando la libreta de bateo con el partido ${game.gamePk} (${dateLabel}):`, err.message);
+    }
+    try {
+      const linescoreRaw = await fetchGameLinescore(game.gamePk);
+      const score = extractFinalScore(linescoreRaw);
+      if (score) {
+        updateTeamLedgerFromGame(teamLedger, { homeTeamId: game.homeTeamId, awayTeamId: game.awayTeamId, homeScore: score.home, awayScore: score.away, date: dateLabel });
+      }
+    } catch (err) {
+      console.error(`  Error actualizando la libreta de equipos con el partido ${game.gamePk} (${dateLabel}):`, err.message);
     }
   }
 }
@@ -308,15 +329,16 @@ async function main() {
   console.log(`Backtest run #${runId}: ${startDate} to ${endDate}${modelNote ? ` (${modelNote})` : ''}`);
 
   const ledger = createLedger();
+  const teamLedger = createTeamLedger();
   const primingStart = `${season}-${PRIMING_START_MONTH_DAY}`;
   const primingDates = dateRange(primingStart, addDays(startDate, -1));
-  console.log(`Calentando la libreta de bateo: ${primingStart} a ${addDays(startDate, -1)} (${primingDates.length} días)...`);
+  console.log(`Calentando las libretas (bateo + equipos): ${primingStart} a ${addDays(startDate, -1)} (${primingDates.length} días)...`);
   for (const [i, date] of primingDates.entries()) {
     const finalGames = await fetchFinalGamesForDate(date);
-    await updateLedgerWithGames(ledger, finalGames, date);
+    await updateLedgerWithGames(ledger, teamLedger, finalGames, date);
     process.stdout.write(`\r  Calentando ${i + 1}/${primingDates.length} (${date})...`);
   }
-  console.log(`\nLibreta lista: ${ledger.size} bateadores con datos.`);
+  console.log(`\nLibretas listas: ${ledger.size} bateadores, ${teamLedger.size} equipos con datos.`);
 
   let totalPredictions = 0;
   for (const date of dateRange(startDate, endDate)) {
@@ -325,14 +347,14 @@ async function main() {
 
     for (const game of finalGames) {
       try {
-        const predictions = await processGame(game, season, ledger);
+        const predictions = await processGame(game, season, ledger, teamLedger);
         dayPredictions = dayPredictions.concat(predictions);
       } catch (err) {
         console.error(`  ${date}: failed on game ${game.gamePk} (${game.awayTeam} @ ${game.homeTeam}):`, err.message);
       }
     }
 
-    await updateLedgerWithGames(ledger, finalGames, date);
+    await updateLedgerWithGames(ledger, teamLedger, finalGames, date);
 
     if (dayPredictions.length > 0) {
       await insertBacktestPredictions(db, dayPredictions.map(p => ({ ...p, runId })));
