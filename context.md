@@ -207,6 +207,23 @@ El usuario autorizó una sesión larga y desatendida para mejorar moneyline vía
 2. Factor de parque en moneyline — se probó indirectamente en este loop (bucket de "extremidad de parque" en mayo) y no dio señal limpia (52%/56%/44%/81% con n chicos, nada monótono) — no se persiguió más.
 3. `eraRecentWeight` (peso reciente/temporada dentro del blend de ERA), `moneylineShrink`, y los clamps de `pitcherFactor` (0.5-1.8) salieron **planos** en los barridos — no hay evidencia de que valga la pena tocarlos.
 
+## Metodología "un cambio a la vez" (vigente desde 2026-08-11)
+
+El usuario corrigió el enfoque: en vez de cambiar todo de golpe en el modelo alternativo y recién ahí correr contra la temporada completa, hay que ir de a un cambio por vez. Regla exacta: **modelo alternativo = misma fórmula de producción, libre para experimentar sin tocar el código real → cambio único → probar en mayo → si mejora mayo, correr contra el resto de la temporada → si aguanta, implementarlo en producción y pasar al siguiente cambio → si no aguanta, descartarlo y probar otro cambio en mayo → repetir con paciencia**. "No necesito rapidez, necesito que suba el porcentaje."
+
+**Candidato #1 bajo esta metodología — bonus de racha (`applyStreakBonus`, commit `0dc8a90`), DESCARTADO 2026-08-11:**
+- Se implementó `computeStreakFromSchedule` (racha de victorias/derrotas derivada del schedule, sin estado — necesario porque Vercel serverless no puede mantener un ledger vivo entre invocaciones) y `applyStreakBonus` en `signals.js`.
+- Se validó con un script local de re-simulación contra los `factors` capturados del run #50: mayo 53.28%→55.47%, resto de temporada 54.22%→55.21%. Parecía una mejora sólida.
+- **Verificación final con código real (run #51, `computeStreakFromSchedule` de verdad) dio 54.88% en toda la temporada — PEOR que el baseline sin racha (55.99%, run #48/#50). Contradijo la simulación.**
+- Causa raíz: el script de simulación local reconstruía `teamWinProbability` usando `factors.homeEra`/`awayEra` (la mezcla de ERA de **totales**, `CAREER_ERA_WEIGHT=0.8`) en vez de `homeMoneylineEra`/`awayMoneylineEra` (la mezcla específica de moneyline, `MONEYLINE_CAREER_ERA_WEIGHT=0.15`, ver arriba) — porque **el capturador de `factors` en `backtest.js` nunca guardaba esos dos campos**. El "baseline sin racha" que usé para comparar era en realidad un modelo distinto y más débil que el de producción (54.06% vs el 55.99% real), así que toda la mejora medida por la racha era comparación contra un baseline incorrecto, no una ganancia real.
+- **Acción**: revertido con `git revert` (commit `cb81c44`), reforzado con fix en `scripts/backtest.js` (commit `aebb839`) para que `factors` ahora también capture `homeMoneylineEra`/`awayMoneylineEra` — cualquier simulación local futura debe verificar que su baseline reconstruido coincida EXACTO con el accuracy real ya guardado en Supabase antes de confiar en una búsqueda de parámetros (la misma disciplina que sí se siguió correctamente en el tuning de los 3 constantes de moneyline — ver arriba — pero que se saltó/falló acá).
+- El código de `lib/teamLedger.js` y `computeStreakFromSchedule` en `lib/mlb.js` quedó (son utilidades correctas, con tests, y sirven de base para la "memoria de equipos" pedida por el usuario) — lo único revertido fue el uso de la racha dentro de `moneylineEstimate`.
+- **Modelo en producción sigue siendo el mismo de antes de este intento**: 55.99% accuracy de moneyline en temporada completa (run #48), sin cambios.
+
+**Regla para toda futura validación de candidatos**: antes de confiar en CUALQUIER resultado de un script de re-simulación local, confirmar que su baseline (sin el cambio candidato) coincide EXACTO con el accuracy ya guardado en Supabase para esa misma corrida/config. Si no coincide, hay un bug en la reconstrucción — no seguir adelante hasta encontrarlo.
+
+**Pendiente**: "memoria de equipos" (petición explícita del usuario, 2026-08-11: analizar todos los juegos de la temporada y darle a cada equipo memoria completa para usar en próximos partidos). `lib/teamLedger.js` ya existe y está integrado como instrumentación en `backtest.js` (Pitágoras, rachas, splits local/visitante, forma reciente) pero solo se usó para investigación — Pitágoras se probó y se descartó, rachas se probó y se descartó (ver arriba). Falta decidir si se sigue buscando una forma de aprovechar esos datos (p. ej. combinaciones, otros mercados) o si se considera la petición ya cubierta por la infraestructura existente aunque ningún uso concreto haya sobrevivido validación todavía.
+
 ## Cómo retomar en una sesión nueva
 
 1. `git status` / `git log -10` / `git fetch` primero — puede haber otra sesión trabajando en paralelo (ver aviso arriba).
