@@ -186,9 +186,26 @@ Se pidió un análisis profundo de todas las señales enviadas hasta ahora vs. l
     1. Corrección de higiene de datos de bajo riesgo, independiente de si mueve el accuracy: filtrar `computeRecentEra`/`computeSeasonEra` por `gamesStarted===1` para no mezclar arranques con relevos (caso Dobnak) — vale hacerlo igual aunque el efecto agregado no se haya medido.
     2. Sin confirmar todavía (no se testeó en este backtest): agregar factor de parque al moneyline. Es solo una hipótesis arquitectónica de un caso anecdótico (Rockies/Coors) — necesitaría su propio test antes de implementarse.
 
-## Loop de mejora autónomo — mayo 2025 como señal rápida (2026-08-11, en curso)
+## Loop de mejora autónomo de moneyline — completado (2026-08-11)
 
-El usuario autorizó una sesión larga y desatendida: iterar prueba-y-error contra el backtest de mayo 2025 (rápido, ~1 mes) como señal de feedback veloz, pero **todo cambio que "mejore" mayo se valida contra la temporada completa antes de quedárselo** — si no se sostiene ahí, se descarta. Meta: accuracy real de moneyline ~65-70% (no 80%, se explicó por qué es irreal para MLB — favoritos de moneyline ganan ~57-60% en toda la liga). Está bien si varía mes a mes. Instrumenté `scripts/backtest.js` para capturar TODOS los ingredientes crudos de cada predicción de moneyline (ERA cruda por componente, récord crudo por componente, OPS de lineup, park factor, arranques reales) — permite simular miles de combinaciones de pesos/parámetros con cálculo local puro contra una sola corrida capturada, sin tener que re-pegarle a la API de MLB por cada prueba. Ver historial de commits desde 2026-08-11 tarde para el detalle de qué se probó y qué se quedó.
+El usuario autorizó una sesión larga y desatendida para mejorar moneyline vía prueba-y-error, con la meta de ~65-70% de accuracy (no 80%, se explicó por qué es irreal para MLB — favoritos de moneyline ganan ~57-60% en toda la liga; está bien si varía mes a mes).
+
+**Metodología** (clave para repetir esto en el futuro, ahorra muchísimo tiempo de API): instrumenté `scripts/backtest.js` para capturar TODOS los ingredientes crudos de cada predicción de moneyline (ERA cruda por componente — reciente/temporada/carrera —, récord crudo por componente, OPS de lineup, park factor, arranques reales) en la columna `factors`. Con eso, un script local aparte (fuera del repo, no comiteado) puede re-simular el pipeline completo de moneyline con cualquier combinación de pesos/clamps/umbrales usando cálculo JS puro contra una sola corrida ya capturada — miles de pruebas por segundo, sin volver a pegarle a la API de MLB.
+
+**Lección de metodología, importante**: buscar parámetros optimizando solo contra un mes (mayo, n=411) fue una trampa — ~75% de combinaciones aleatorias de parámetros "mejoraban" mayo en agregado, puro ruido. Partir mayo en dos mitades (1-15 vs 16-31) y exigir mejora en AMBAS bajó los sobrevivientes a un puñado, y ninguno se sostuvo contra la temporada completa (0 de 80 candidatos). La búsqueda que sí funcionó fue exigir mejora simultánea en **las dos mitades de la temporada completa** (marzo-junio vs julio-septiembre, ~1200 juegos cada una) — mucho más señal, mucho menos ruido.
+
+**✅ Implementado y desplegado** — 3 cambios, cada uno con un barrido univariado limpio (pico real, no artefacto de límite de búsqueda) sobre la temporada completa:
+- `MONEYLINE_CAREER_ERA_WEIGHT = 0.15` (constante nueva en `signals.js`, **separada** de `CAREER_ERA_WEIGHT` que sigue en 0.8 para totales/F5 — los dos mercados se validaron en direcciones opuestas). Moneyline quiere mucho más peso a la ERA de carrera que temporada/reciente — una muestra de varias temporadas es mucho más confiable que media temporada. Requirió computar una ERA separada para moneyline (`homeMoneylineEra`/`awayMoneylineEra`) en `scan.js` y `backtest.js`, distinta de la que usan totales/F5.
+- `HOME_FIELD_BONUS`: 0.04 → 0.09 (la ventaja de local vale más o menos el doble de lo que el modelo asumía).
+- `RECORD_ADJUSTMENT_SCALE`: 0.3 → 0.5 (promovida de número mágico hardcodeado dentro de `teamWinProbability` a constante exportada).
+- Clamp de probabilidad de victoria por equipo: 0.30-0.70 → 0.20-0.80 (efecto más chico pero consistente).
+
+**Validado dos veces**: primero con el simulador local (miles de combinaciones), después corriendo el código real implementado en un backtest de temporada completa fresco (run #48) — dio 55.99%, coincidiendo casi exacto con el 56.00% simulado. Contra baseline (run #44, 54.06%): mejora real de ~+1.94pp, sosteniéndose en ambas mitades de temporada (56.18%/55.79% vs 53.25%/54.94%) y con mejor Brier (0.2482 vs 0.2507).
+
+**Pendientes de la auditoría original, todavía sin implementar**:
+1. Filtrar `computeRecentEra`/`computeSeasonEra` por `gamesStarted===1` para no mezclar arranques con relevos (caso Dobnak) — higiene de datos de bajo riesgo, efecto agregado no medido.
+2. Factor de parque en moneyline — se probó indirectamente en este loop (bucket de "extremidad de parque" en mayo) y no dio señal limpia (52%/56%/44%/81% con n chicos, nada monótono) — no se persiguió más.
+3. `eraRecentWeight` (peso reciente/temporada dentro del blend de ERA), `moneylineShrink`, y los clamps de `pitcherFactor` (0.5-1.8) salieron **planos** en los barridos — no hay evidencia de que valga la pena tocarlos.
 
 ## Cómo retomar en una sesión nueva
 
