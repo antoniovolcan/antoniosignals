@@ -237,7 +237,7 @@ export async function processGame(game, season, ledger, teamLedger) {
     // clamps, or thresholds by pure local computation against this one capture, instead of needing
     // a fresh MLB-API-heavy backtest run per parameter combination tried.
     factors: {
-      homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away,
+      homeEra, awayEra, homeMoneylineEra, awayMoneylineEra, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away,
       homeSeasonEra: homeProfile?.seasonEra ?? null, homeRecentEra: homeProfile?.recentEra ?? null, homeCareerEra: homeProfile?.careerEra ?? null,
       awaySeasonEra: awayProfile?.seasonEra ?? null, awayRecentEra: awayProfile?.recentEra ?? null, awayCareerEra: awayProfile?.careerEra ?? null,
       homeRecordWinPct, awayRecordWinPct,
