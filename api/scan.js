@@ -2,7 +2,7 @@
 import { createDbClient, upsertGame, getTodaysSignalId, insertSignal, updateSignal, getConfigValue, gameAlreadyScannedToday, markGameScanned, getSimPrediction, getUngradedSignalsForDate, getGameInfo } from '../lib/db.js';
 import {
   fetchSchedule, parseScheduleGames,
-  fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName,
+  fetchPitcherGameLog, computeRecentEra, computeSeasonEra, extractPitcherName, countRealStarts,
   fetchPitcherYearByYearStats, computeCareerEraBeforeSeason,
   fetchTeamRoster, parseRoster,
   fetchBatterSeasonStats,
@@ -18,7 +18,7 @@ import {
   impliedProbability, edge, isSignal, isConfidentEnough, formatSignalMessage,
   blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS,
   CAREER_ERA_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
-  TEAM_RECORD_RECENT_WEIGHT, formatSimComparisonNote, selectAlternateLine,
+  TEAM_RECORD_RECENT_WEIGHT, formatSimComparisonNote, selectAlternateLine, THIN_SAMPLE_STARTS_THRESHOLD,
 } from '../lib/signals.js';
 import { getRunParkFactor } from '../lib/parkFactors.js';
 import { sendTelegramDocument, sendTelegramMessage } from '../lib/telegram.js';
@@ -226,6 +226,8 @@ export async function runScan({ force = false, sendDigest = true } = {}) {
       const awayEra = awayGameLog ? computeRecentEra(awayGameLog) : 4.00;
       const homeSeasonEra = homeGameLog ? computeSeasonEra(homeGameLog) : 4.00;
       const awaySeasonEra = awayGameLog ? computeSeasonEra(awayGameLog) : 4.00;
+      const homeStartsCount = homeGameLog ? countRealStarts(homeGameLog) : null;
+      const awayStartsCount = awayGameLog ? countRealStarts(awayGameLog) : null;
       const homeCareerEra = homeYearByYearRaw ? computeCareerEraBeforeSeason(homeYearByYearRaw, SEASON) : null;
       const awayCareerEra = awayYearByYearRaw ? computeCareerEraBeforeSeason(awayYearByYearRaw, SEASON) : null;
       const homeRecentSeasonEra = blendEraEstimates(homeEra, homeSeasonEra);
@@ -257,10 +259,14 @@ export async function runScan({ force = false, sendDigest = true } = {}) {
       const awayOffensiveFactor = computeOffensiveFactor({ lineupOps: awayLineupOps, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 
       const homeWinProb = moneylineEstimate({
-        home: { recordWinPct: homeRecord.recordWinPct, startingPitcherEra: homeBlendedEra, offensiveFactor: homeOffensiveFactor },
-        away: { recordWinPct: awayRecord.recordWinPct, startingPitcherEra: awayBlendedEra, offensiveFactor: awayOffensiveFactor },
+        home: { recordWinPct: homeRecord.recordWinPct, startingPitcherEra: homeBlendedEra, offensiveFactor: homeOffensiveFactor, startsCount: homeStartsCount },
+        away: { recordWinPct: awayRecord.recordWinPct, startingPitcherEra: awayBlendedEra, offensiveFactor: awayOffensiveFactor, startsCount: awayStartsCount },
       });
       const awayWinProb = 1 - homeWinProb;
+      const favoredStartsCount = homeWinProb > 0.5 ? homeStartsCount : awayStartsCount;
+      const thinSampleNote = favoredStartsCount != null && favoredStartsCount < THIN_SAMPLE_STARTS_THRESHOLD
+        ? ` El abridor favorito tiene solo ${favoredStartsCount} arranque${favoredStartsCount === 1 ? '' : 's'} real${favoredStartsCount === 1 ? '' : 'es'} esta temporada — el modelo reduce su confianza en este pick por la muestra chica.`
+        : '';
 
       const simPrediction = await getSimPrediction(db, today, game.homeTeam, game.awayTeam);
 
@@ -274,7 +280,7 @@ export async function runScan({ force = false, sendDigest = true } = {}) {
         const existingSignalId = await getTodaysSignalId(db, game.gamePk, 'moneyline', team);
         if (!force && existingSignalId) continue;
 
-        const reasoning = `El modelo compara el pitcheo (ERA de temporada + últimos 5 arranques + carrera), el récord de cada equipo (últimos 15 partidos y temporada completa), y qué tan bien está bateando cada lineup titular contra la mano del pitcher rival. Abridor de ${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)}${formatCareerEraNote(homeCareerEra)} y reciente ${homeEra.toFixed(2)}. Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)}${formatCareerEraNote(awayCareerEra)} y reciente ${awayEra.toFixed(2)}. Récord: ${game.homeTeam} tiene ${(homeRecord.seasonWinPct * 100).toFixed(1)}% de victorias en la temporada (${(homeRecord.recentWinPct * 100).toFixed(1)}% en sus últimos 15), ${game.awayTeam} ${(awayRecord.seasonWinPct * 100).toFixed(1)}% en la temporada (${(awayRecord.recentWinPct * 100).toFixed(1)}% en sus últimos 15). El lineup titular de ${game.homeTeam} batea para ${homeLineupOps.toFixed(3)} de OPS contra pitchers de esa mano, el de ${game.awayTeam} para ${awayLineupOps.toFixed(3)}. Con todo esto, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.${formatSimComparisonNote(simPrediction, team)}`;
+        const reasoning = `El modelo compara el pitcheo (ERA de temporada + últimos 5 arranques + carrera), el récord de cada equipo (últimos 15 partidos y temporada completa), y qué tan bien está bateando cada lineup titular contra la mano del pitcher rival. Abridor de ${game.homeTeam}: ${homePitcherName}, ERA de temporada ${homeSeasonEra.toFixed(2)}${formatCareerEraNote(homeCareerEra)} y reciente ${homeEra.toFixed(2)}. Abridor de ${game.awayTeam}: ${awayPitcherName}, ERA de temporada ${awaySeasonEra.toFixed(2)}${formatCareerEraNote(awayCareerEra)} y reciente ${awayEra.toFixed(2)}. Récord: ${game.homeTeam} tiene ${(homeRecord.seasonWinPct * 100).toFixed(1)}% de victorias en la temporada (${(homeRecord.recentWinPct * 100).toFixed(1)}% en sus últimos 15), ${game.awayTeam} ${(awayRecord.seasonWinPct * 100).toFixed(1)}% en la temporada (${(awayRecord.recentWinPct * 100).toFixed(1)}% en sus últimos 15). El lineup titular de ${game.homeTeam} batea para ${homeLineupOps.toFixed(3)} de OPS contra pitchers de esa mano, el de ${game.awayTeam} para ${awayLineupOps.toFixed(3)}. Con todo esto, el modelo calcula que ${team} tiene más probabilidad de ganar de la que refleja la cuota de la casa.${formatSimComparisonNote(simPrediction, team)}${thinSampleNote}`;
         const message = formatSignalMessage({
           matchup: `${game.awayTeam} @ ${game.homeTeam}`,
           market: 'Moneyline',

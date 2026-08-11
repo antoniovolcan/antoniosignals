@@ -19,7 +19,7 @@
 // the moneyline/totals offensive factor.
 import {
   fetchSchedule, parseScheduleGames, fetchPitcherGameLog, filterGameLogBefore,
-  computeRecentEra, computeSeasonEra,
+  computeRecentEra, computeSeasonEra, countRealStarts,
   extractPitcherName, fetchPersonInfo, extractPitchHand,
   fetchPitcherYearByYearStats, computeCareerEraBeforeSeason,
   fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
@@ -87,15 +87,6 @@ async function getPitchHand(pitcherId) {
     }
   }
   return pitchHandCache.get(pitcherId);
-}
-
-// Instrumentation-only, doesn't feed the model: how many real starts (gamesStarted===1 splits,
-// strictly before cutoffDate) back this pitcher's season/recent ERA -- to measure, not yet act on,
-// whether accuracy holds up when that number is thin (see the 2026-08-11 live-signal audit in
-// context.md: computeRecentEra/computeSeasonEra don't filter by role or weigh by sample size today).
-function countRealStarts(filteredGameLog) {
-  const splits = filteredGameLog.stats?.[0]?.splits || [];
-  return splits.filter(s => Number(s.stat?.gamesStarted || 0) === 1).length;
 }
 
 async function computePitcherProfileAsOf(pitcherId, season, cutoffDate) {
@@ -215,8 +206,8 @@ export async function processGame(game, season, ledger) {
 
   // --- Moneyline ---
   const homeWinProb = moneylineEstimate({
-    home: { recordWinPct: homeRecordWinPct, startingPitcherEra: homeEra, offensiveFactor: homeOffensiveFactor },
-    away: { recordWinPct: awayRecordWinPct, startingPitcherEra: awayEra, offensiveFactor: awayOffensiveFactor },
+    home: { recordWinPct: homeRecordWinPct, startingPitcherEra: homeEra, offensiveFactor: homeOffensiveFactor, startsCount: homeProfile?.startsCount ?? null },
+    away: { recordWinPct: awayRecordWinPct, startingPitcherEra: awayEra, offensiveFactor: awayOffensiveFactor, startsCount: awayProfile?.startsCount ?? null },
   });
   predictions.push({
     gamePk: game.gamePk, gameDate: game.date, market: 'moneyline', selection: game.homeTeam,
