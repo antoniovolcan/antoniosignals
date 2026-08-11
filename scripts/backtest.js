@@ -89,6 +89,15 @@ async function getPitchHand(pitcherId) {
   return pitchHandCache.get(pitcherId);
 }
 
+// Instrumentation-only, doesn't feed the model: how many real starts (gamesStarted===1 splits,
+// strictly before cutoffDate) back this pitcher's season/recent ERA -- to measure, not yet act on,
+// whether accuracy holds up when that number is thin (see the 2026-08-11 live-signal audit in
+// context.md: computeRecentEra/computeSeasonEra don't filter by role or weigh by sample size today).
+function countRealStarts(filteredGameLog) {
+  const splits = filteredGameLog.stats?.[0]?.splits || [];
+  return splits.filter(s => Number(s.stat?.gamesStarted || 0) === 1).length;
+}
+
 async function computePitcherProfileAsOf(pitcherId, season, cutoffDate) {
   const fullLog = await getPitcherGameLog(pitcherId, season);
   const filtered = filterGameLogBefore(fullLog, cutoffDate);
@@ -103,6 +112,8 @@ async function computePitcherProfileAsOf(pitcherId, season, cutoffDate) {
     name: extractPitcherName(fullLog) || 'desconocido',
     blendedEra: careerEra == null ? recentSeasonEra : blendEraEstimates(recentSeasonEra, careerEra, CAREER_ERA_WEIGHT),
     seasonEra, recentEra, careerEra,
+    startsCount: countRealStarts(filtered),
+    careerGap: careerEra == null ? null : Math.abs(recentSeasonEra - careerEra),
   };
 }
 
@@ -211,7 +222,11 @@ export async function processGame(game, season, ledger) {
     gamePk: game.gamePk, gameDate: game.date, market: 'moneyline', selection: game.homeTeam,
     homeTeam: game.homeTeam, awayTeam: game.awayTeam,
     projectedProb: homeWinProb, actualOutcome: score.home > score.away,
-    factors: { homeEra, awayEra, homeRecordWinPct, awayRecordWinPct, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away },
+    factors: {
+      homeEra, awayEra, homeRecordWinPct, awayRecordWinPct, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away,
+      homeStartsCount: homeProfile?.startsCount ?? 0, awayStartsCount: awayProfile?.startsCount ?? 0,
+      homeCareerGap: homeProfile?.careerGap ?? null, awayCareerGap: awayProfile?.careerGap ?? null,
+    },
   });
 
   // --- Totals ---
