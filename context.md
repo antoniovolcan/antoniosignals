@@ -5,7 +5,7 @@
 | | |
 |---|---|
 | **Qué es** | Bot de Telegram personal que cruza stats de MLB con cuotas de casa de apuestas y manda señales de valor (moneyline, totales, totales 1ras 5 entradas). No manda señales de hits de bateador ni de ponches de pitcher (ambas se quitaron a propósito — hits desde el inicio, ponches el 2026-08-01 por demasiada varianza, esencialmente un coinflip). |
-| **Repo local** | `C:\Users\anton\OneDrive\Escritorio\MLB` |
+| **Repo local** | `C:\Users\anton\OneDrive\Escritorio\AI raiz\MLB\mlb-telegram-bot` (movido el 2026-08-11 — antes estaba en `C:\Users\anton\OneDrive\Escritorio\MLB`) |
 | **GitHub** | `https://github.com/antoniovolcan/antoniosignals` (rama `master`) |
 | **Deploy** | Vercel, proyecto `antoniovolcans-projects/mlb-telegram-signals`, plan **Hobby (gratis)** — límite duro de 10s por función |
 | **URL producción** | `https://mlb-telegram-signals.vercel.app` |
@@ -166,13 +166,23 @@ La temporada 2025 en esta base de datos va del 18 de marzo al 28 de septiembre. 
 - Umpire no implementado.
 - `docs/MODEL_INPUTS.md` desactualizado — no confiar sin revisar el código real.
 - Cuota de The Odds API se agota fácil — el backtest no la toca, pero `runScan()`/`/senales` sí.
-- **Muestra chica en producción real** (`signals` en Supabase): totales 72.9% de acierto real (n=181, bien), pero moneyline 46.3% (n=41) — peor que el accuracy crudo del backtest. Vigilar con más datos acumulados antes de sacar conclusiones sobre si el filtro de edge les sirve.
+- **Muestra chica en producción real** (`signals` en Supabase, limpia desde 2026-08-11 — ver abajo): moneyline y totales rondan apenas por encima de 50% de acierto real, bastante peor que el backtest. Vigilar con más datos acumulados antes de sacar conclusiones sobre si el filtro de edge les sirve.
+
+## Auditoría de señales en vivo (2026-08-11) — hallazgos y pendientes
+
+Se pidió un análisis profundo de todas las señales enviadas hasta ahora vs. lo que pasó en la realidad. Hallazgos:
+
+- **Contaminación de datos, ya limpiada**: el 24/07 había 156 filas en `signals` (128 de "totals") generadas en una ráfaga de 9 horas sobre solo 15 juegos — claramente pruebas manuales de cuando se armaba el bot, no actividad real (inflaba el accuracy de totales a 80.5% ese día solo). Se borraron esas 156 filas de Supabase (por id explícito, ver commits/chat del 2026-08-11). Además, el modelo actual (shrink de calibración de moneyline, filtro de confianza, peso de ERA de carrera, park factor) recién quedó armado el 27-28/07 — señales anteriores a esa fecha las mandó una versión inmadura (se vieron `estimated_prob` de hasta 98.2%, imposible con el clamp actual de 95%) y no deberían usarse para juzgar el modelo de hoy.
+- **Con datos limpios (desde 27-28/07)**: moneyline 17/36 (47.2%), totales 70/128 (54.7%, pero Over 49.5% vs Under 68.6% — asimetría fuerte).
+- **Moneyline: el edge está invertido** — a mayor edge reportado, peor accuracy real (5-8% edge: 58.8%, 8-12%: 41.7%, 12%+: 28.6%). Causa raíz identificada revisando los picks de mayor edge uno por uno (con datos reales de la API de MLB y noticias): los pesos de blend son fijos (`blendEraEstimates` recentWeight=0.6, `CAREER_ERA_WEIGHT`=0.8) sin importar cuántos arranques respaldan cada número — una ventana de 5 arranques ruidosa pesa más que una temporada completa (caso Cristopher Sánchez: reciente 5.02 alejó del pick, esa misma noche ponchó 11 en 6 innings en blanco), y una brecha carrera-vs-temporada extrema se corrige igual que una chica (caso Foster Griffin: temporada 2.76 / carrera 6.75, regresó a la media literalmente en su siguiente arranque con 6 carreras permitidas). También se confirmó que `computeRecentEra`/`computeSeasonEra` no filtran por `gamesStarted` (mezclan arranques y relevos — caso Randy Dobnak). El moneyline tampoco usa factor de parque (solo lo usan totales/F5) — caso Rockies en Coors, 7-9.
+- **Totales: sesgo direccional persiste post-shrink** — picks de Over ganan por apenas +0.75 carreras de margen promedio, picks de Under por -1.59. Es el mismo patrón que originalmente motivó `TOTALS_CALIBRATION_SHRINK` (proyecciones altas se quedan cortas), pero el shrink actual es simétrico y no corrige un sesgo que es direccional (solo lado alto). Confirmado que esto NO lo introdujo la feature de líneas alternativas (mismo patrón antes y después del 03/08).
+- **Pendiente (no implementado aún, requiere validar con backtest de temporada completa antes de tocar código)**: bucketear accuracy de moneyline en el backtest por "cantidad de arranques reales detrás del ERA de temporada/reciente" para confirmar la hipótesis de shrinkage-por-muestra-chica con miles de predicciones (no 36). Si se confirma: reemplazar pesos fijos por pesos proporcionales al tamaño de muestra, filtrar por `gamesStarted===1` en el cálculo de ERA, evaluar agregar park factor a moneyline, y probar un shrink asimétrico para totales (solo en el lado de proyecciones altas).
 
 ## Cómo retomar en una sesión nueva
 
 1. `git status` / `git log -10` / `git fetch` primero — puede haber otra sesión trabajando en paralelo (ver aviso arriba).
 2. Lee este archivo. `docs/MODEL_INPUTS.md` está desactualizado, mejor revisar `lib/signals.js` y `scripts/backtest.js` directamente para el estado real del modelo.
-3. `cd C:\Users\anton\OneDrive\Escritorio\MLB && npm test` — confirmar que todo pasa (el conteo exacto de tests sube con cada sesión).
+3. `cd "C:\Users\anton\OneDrive\Escritorio\AI raiz\MLB\mlb-telegram-bot" && npm test` — confirmar que todo pasa (el conteo exacto de tests sube con cada sesión).
 4. Para ver el estado del modelo con datos reales: dashboard (`/backtest/`, secreto en `.env` como `DASHBOARD_SECRET`).
 5. Para correr un backtest nuevo: `node --env-file=.env scripts/backtest.js <inicio> <fin> "nota"` — tarda varios minutos (un mes) a ~1 hora (temporada completa).
 6. Para analizar fallos en bulk: `node --env-file=.env scripts/analyze-misses.js <runId> [--market=X] [--limit=N]`.
