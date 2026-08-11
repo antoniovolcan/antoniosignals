@@ -30,7 +30,7 @@ import {
 } from '../lib/mlb.js';
 import {
   blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS, moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns,
-  CAREER_ERA_WEIGHT, TEAM_RECORD_RECENT_WEIGHT,
+  CAREER_ERA_WEIGHT, MONEYLINE_CAREER_ERA_WEIGHT, TEAM_RECORD_RECENT_WEIGHT,
 } from '../lib/signals.js';
 import { createLedger, updateLedgerFromPlateAppearances, getBatterLedgerProfile } from '../lib/battingLedger.js';
 import { getRunParkFactor } from '../lib/parkFactors.js';
@@ -101,7 +101,11 @@ async function computePitcherProfileAsOf(pitcherId, season, cutoffDate) {
   const recentSeasonEra = blendEraEstimates(recentEra, seasonEra);
   return {
     name: extractPitcherName(fullLog) || 'desconocido',
+    // Totals/F5 blend (CAREER_ERA_WEIGHT); moneyline uses its own, much career-heavier blend
+    // (MONEYLINE_CAREER_ERA_WEIGHT, see signals.js) -- kept separate since the two markets were
+    // validated in opposite directions.
     blendedEra: careerEra == null ? recentSeasonEra : blendEraEstimates(recentSeasonEra, careerEra, CAREER_ERA_WEIGHT),
+    moneylineEra: careerEra == null ? recentSeasonEra : blendEraEstimates(recentSeasonEra, careerEra, MONEYLINE_CAREER_ERA_WEIGHT),
     seasonEra, recentEra, careerEra,
     startsCount: countRealStarts(filtered),
     careerGap: careerEra == null ? null : Math.abs(recentSeasonEra - careerEra),
@@ -208,12 +212,14 @@ export async function processGame(game, season, ledger) {
 
   const homeEra = homeProfile?.blendedEra ?? 4.00;
   const awayEra = awayProfile?.blendedEra ?? 4.00;
+  const homeMoneylineEra = homeProfile?.moneylineEra ?? 4.00;
+  const awayMoneylineEra = awayProfile?.moneylineEra ?? 4.00;
   const runParkFactor = getRunParkFactor(game.homeTeam);
 
   // --- Moneyline ---
   const homeWinProb = moneylineEstimate({
-    home: { recordWinPct: homeRecordWinPct, startingPitcherEra: homeEra, offensiveFactor: homeOffensiveFactor, startsCount: homeProfile?.startsCount ?? null },
-    away: { recordWinPct: awayRecordWinPct, startingPitcherEra: awayEra, offensiveFactor: awayOffensiveFactor, startsCount: awayProfile?.startsCount ?? null },
+    home: { recordWinPct: homeRecordWinPct, startingPitcherEra: homeMoneylineEra, offensiveFactor: homeOffensiveFactor, startsCount: homeProfile?.startsCount ?? null },
+    away: { recordWinPct: awayRecordWinPct, startingPitcherEra: awayMoneylineEra, offensiveFactor: awayOffensiveFactor, startsCount: awayProfile?.startsCount ?? null },
   });
   predictions.push({
     gamePk: game.gamePk, gameDate: game.date, market: 'moneyline', selection: game.homeTeam,

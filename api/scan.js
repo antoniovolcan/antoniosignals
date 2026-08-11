@@ -17,7 +17,7 @@ import {
   moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns, overProbability,
   impliedProbability, edge, isSignal, isConfidentEnough, formatSignalMessage,
   blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS,
-  CAREER_ERA_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
+  CAREER_ERA_WEIGHT, MONEYLINE_CAREER_ERA_WEIGHT, formatCareerEraNote, formatCareerEraPairNote,
   TEAM_RECORD_RECENT_WEIGHT, formatSimComparisonNote, selectAlternateLine, THIN_SAMPLE_STARTS_THRESHOLD,
 } from '../lib/signals.js';
 import { getRunParkFactor } from '../lib/parkFactors.js';
@@ -234,6 +234,10 @@ export async function runScan({ force = false, sendDigest = true } = {}) {
       const awayRecentSeasonEra = blendEraEstimates(awayEra, awaySeasonEra);
       const homeBlendedEra = homeCareerEra == null ? homeRecentSeasonEra : blendEraEstimates(homeRecentSeasonEra, homeCareerEra, CAREER_ERA_WEIGHT);
       const awayBlendedEra = awayCareerEra == null ? awayRecentSeasonEra : blendEraEstimates(awayRecentSeasonEra, awayCareerEra, CAREER_ERA_WEIGHT);
+      // Moneyline leans on career ERA much harder than totals does (MONEYLINE_CAREER_ERA_WEIGHT vs
+      // CAREER_ERA_WEIGHT, see signals.js) -- a separate blend, only used for the moneyline pick below.
+      const homeMoneylineEra = homeCareerEra == null ? homeRecentSeasonEra : blendEraEstimates(homeRecentSeasonEra, homeCareerEra, MONEYLINE_CAREER_ERA_WEIGHT);
+      const awayMoneylineEra = awayCareerEra == null ? awayRecentSeasonEra : blendEraEstimates(awayRecentSeasonEra, awayCareerEra, MONEYLINE_CAREER_ERA_WEIGHT);
 
       const homeSeasonRunsPerGame = extractRunsPerGame(homeSeasonHittingRaw);
       const awaySeasonRunsPerGame = extractRunsPerGame(awaySeasonHittingRaw);
@@ -259,8 +263,8 @@ export async function runScan({ force = false, sendDigest = true } = {}) {
       const awayOffensiveFactor = computeOffensiveFactor({ lineupOps: awayLineupOps, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 
       const homeWinProb = moneylineEstimate({
-        home: { recordWinPct: homeRecord.recordWinPct, startingPitcherEra: homeBlendedEra, offensiveFactor: homeOffensiveFactor, startsCount: homeStartsCount },
-        away: { recordWinPct: awayRecord.recordWinPct, startingPitcherEra: awayBlendedEra, offensiveFactor: awayOffensiveFactor, startsCount: awayStartsCount },
+        home: { recordWinPct: homeRecord.recordWinPct, startingPitcherEra: homeMoneylineEra, offensiveFactor: homeOffensiveFactor, startsCount: homeStartsCount },
+        away: { recordWinPct: awayRecord.recordWinPct, startingPitcherEra: awayMoneylineEra, offensiveFactor: awayOffensiveFactor, startsCount: awayStartsCount },
       });
       const awayWinProb = 1 - homeWinProb;
       const favoredStartsCount = homeWinProb > 0.5 ? homeStartsCount : awayStartsCount;
