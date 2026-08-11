@@ -9,7 +9,7 @@ import {
   fetchPersonInfo, extractPitchHand,
   fetchBatterHittingVsHand,
   fetchTeamSeasonHitting, fetchTeamRecentHitting, extractRunsPerGame, extractOpsFromHittingStats,
-  fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
+  fetchTeamRecentSchedule, computeWinPctFromSchedule, computeStreakFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   mlbDateToday, addDaysToDateString,
 } from '../lib/mlb.js';
 import { fetchMlbOdds, parseOddsEvents, findTeamPrice, findTotalsLine, findAllTotalsLines, fetchEventPlayerProps, extractMarket } from '../lib/odds.js';
@@ -63,7 +63,9 @@ async function computeTeamRecordWinPct(teamId, beforeDate) {
   const scheduleRaw = await fetchTeamRecentSchedule(teamId, `${SEASON}-01-01`, endDate);
   const seasonWinPct = computeWinPctFromSchedule(scheduleRaw, teamId);
   const recentWinPct = computeWinPctFromSchedule(scheduleRaw, teamId, { lastN: 15 });
-  return { recordWinPct: blendEraEstimates(recentWinPct, seasonWinPct, TEAM_RECORD_RECENT_WEIGHT), seasonWinPct, recentWinPct };
+  // Reuses this same schedule fetch (zero extra API calls) — see computeStreakFromSchedule in mlb.js.
+  const streak = computeStreakFromSchedule(scheduleRaw, teamId);
+  return { recordWinPct: blendEraEstimates(recentWinPct, seasonWinPct, TEAM_RECORD_RECENT_WEIGHT), seasonWinPct, recentWinPct, streak };
 }
 
 async function fetchRecentLineup(teamId, beforeDate) {
@@ -263,8 +265,8 @@ export async function runScan({ force = false, sendDigest = true } = {}) {
       const awayOffensiveFactor = computeOffensiveFactor({ lineupOps: awayLineupOps, leagueAvgOps: LEAGUE_AVG_TOP_WEIGHTED_OPS });
 
       const homeWinProb = moneylineEstimate({
-        home: { recordWinPct: homeRecord.recordWinPct, startingPitcherEra: homeMoneylineEra, offensiveFactor: homeOffensiveFactor, startsCount: homeStartsCount },
-        away: { recordWinPct: awayRecord.recordWinPct, startingPitcherEra: awayMoneylineEra, offensiveFactor: awayOffensiveFactor, startsCount: awayStartsCount },
+        home: { recordWinPct: homeRecord.recordWinPct, startingPitcherEra: homeMoneylineEra, offensiveFactor: homeOffensiveFactor, startsCount: homeStartsCount, streak: homeRecord.streak },
+        away: { recordWinPct: awayRecord.recordWinPct, startingPitcherEra: awayMoneylineEra, offensiveFactor: awayOffensiveFactor, startsCount: awayStartsCount, streak: awayRecord.streak },
       });
       const awayWinProb = 1 - homeWinProb;
       const favoredStartsCount = homeWinProb > 0.5 ? homeStartsCount : awayStartsCount;

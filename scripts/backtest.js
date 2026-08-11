@@ -22,7 +22,7 @@ import {
   computeRecentEra, computeSeasonEra, countRealStarts,
   extractPitcherName, fetchPersonInfo, extractPitchHand,
   fetchPitcherYearByYearStats, computeCareerEraBeforeSeason,
-  fetchTeamRecentSchedule, computeWinPctFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
+  fetchTeamRecentSchedule, computeWinPctFromSchedule, computeStreakFromSchedule, findMostRecentFinalGamePk, extractStartingLineup, fetchGameBoxscore,
   fetchTeamRoster, parseRoster,
   fetchTeamRecentHitting, extractRunsPerGame,
   fetchGameLinescore, extractFinalScore, extractFirstFiveInningsScore,
@@ -120,9 +120,10 @@ async function computeTeamRecordWinPctAsOf(teamId, season, cutoffDate) {
   const schedule = await fetchTeamRecentSchedule(teamId, `${season}-01-01`, addDays(cutoffDate, -1));
   const seasonWinPct = computeWinPctFromSchedule(schedule, teamId);
   const recentWinPct = computeWinPctFromSchedule(schedule, teamId, { lastN: 15 });
+  const streak = computeStreakFromSchedule(schedule, teamId);
   return {
     recordWinPct: blendEraEstimates(recentWinPct, seasonWinPct, TEAM_RECORD_RECENT_WEIGHT),
-    seasonWinPct, recentWinPct,
+    seasonWinPct, recentWinPct, streak,
   };
 }
 
@@ -225,8 +226,8 @@ export async function processGame(game, season, ledger, teamLedger) {
 
   // --- Moneyline ---
   const homeWinProb = moneylineEstimate({
-    home: { recordWinPct: homeRecordWinPct, startingPitcherEra: homeMoneylineEra, offensiveFactor: homeOffensiveFactor, startsCount: homeProfile?.startsCount ?? null },
-    away: { recordWinPct: awayRecordWinPct, startingPitcherEra: awayMoneylineEra, offensiveFactor: awayOffensiveFactor, startsCount: awayProfile?.startsCount ?? null },
+    home: { recordWinPct: homeRecordWinPct, startingPitcherEra: homeMoneylineEra, offensiveFactor: homeOffensiveFactor, startsCount: homeProfile?.startsCount ?? null, streak: homeRecord.streak },
+    away: { recordWinPct: awayRecordWinPct, startingPitcherEra: awayMoneylineEra, offensiveFactor: awayOffensiveFactor, startsCount: awayProfile?.startsCount ?? null, streak: awayRecord.streak },
   });
   predictions.push({
     gamePk: game.gamePk, gameDate: game.date, market: 'moneyline', selection: game.homeTeam,
