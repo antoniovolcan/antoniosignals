@@ -115,7 +115,10 @@ async function computeTeamRecordWinPctAsOf(teamId, season, cutoffDate) {
   const schedule = await fetchTeamRecentSchedule(teamId, `${season}-01-01`, addDays(cutoffDate, -1));
   const seasonWinPct = computeWinPctFromSchedule(schedule, teamId);
   const recentWinPct = computeWinPctFromSchedule(schedule, teamId, { lastN: 15 });
-  return blendEraEstimates(recentWinPct, seasonWinPct, TEAM_RECORD_RECENT_WEIGHT);
+  return {
+    recordWinPct: blendEraEstimates(recentWinPct, seasonWinPct, TEAM_RECORD_RECENT_WEIGHT),
+    seasonWinPct, recentWinPct,
+  };
 }
 
 async function computeTeamRunsAsOf(teamId, season, cutoffDate) {
@@ -174,12 +177,14 @@ export async function processGame(game, season, ledger) {
   const score = extractFinalScore(linescoreRaw);
   if (!score) return predictions; // not actually final / no score available, skip
 
-  const [homeRecordWinPct, awayRecordWinPct, homeRuns, awayRuns] = await Promise.all([
+  const [homeRecord, awayRecord, homeRuns, awayRuns] = await Promise.all([
     computeTeamRecordWinPctAsOf(game.homeTeamId, season, game.date),
     computeTeamRecordWinPctAsOf(game.awayTeamId, season, game.date),
     computeTeamRunsAsOf(game.homeTeamId, season, game.date),
     computeTeamRunsAsOf(game.awayTeamId, season, game.date),
   ]);
+  const homeRecordWinPct = homeRecord.recordWinPct;
+  const awayRecordWinPct = awayRecord.recordWinPct;
 
   const homePitcherId = game.homeProbablePitcherId;
   const awayPitcherId = game.awayProbablePitcherId;
@@ -203,6 +208,7 @@ export async function processGame(game, season, ledger) {
 
   const homeEra = homeProfile?.blendedEra ?? 4.00;
   const awayEra = awayProfile?.blendedEra ?? 4.00;
+  const runParkFactor = getRunParkFactor(game.homeTeam);
 
   // --- Moneyline ---
   const homeWinProb = moneylineEstimate({
@@ -213,8 +219,18 @@ export async function processGame(game, season, ledger) {
     gamePk: game.gamePk, gameDate: game.date, market: 'moneyline', selection: game.homeTeam,
     homeTeam: game.homeTeam, awayTeam: game.awayTeam,
     projectedProb: homeWinProb, actualOutcome: score.home > score.away,
+    // Deliberately raw/unblended ingredients (not just the final homeEra/homeRecordWinPct the live
+    // formula uses) -- lets later analysis re-simulate the whole pipeline under different weights,
+    // clamps, or thresholds by pure local computation against this one capture, instead of needing
+    // a fresh MLB-API-heavy backtest run per parameter combination tried.
     factors: {
-      homeEra, awayEra, homeRecordWinPct, awayRecordWinPct, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away,
+      homeEra, awayEra, homeOffensiveFactor, awayOffensiveFactor, homeScore: score.home, awayScore: score.away,
+      homeSeasonEra: homeProfile?.seasonEra ?? null, homeRecentEra: homeProfile?.recentEra ?? null, homeCareerEra: homeProfile?.careerEra ?? null,
+      awaySeasonEra: awayProfile?.seasonEra ?? null, awayRecentEra: awayProfile?.recentEra ?? null, awayCareerEra: awayProfile?.careerEra ?? null,
+      homeRecordWinPct, awayRecordWinPct,
+      homeSeasonWinPct: homeRecord.seasonWinPct, homeRecentWinPct: homeRecord.recentWinPct,
+      awaySeasonWinPct: awayRecord.seasonWinPct, awayRecentWinPct: awayRecord.recentWinPct,
+      homeLineupOps, awayLineupOps, runParkFactor,
       homeStartsCount: homeProfile?.startsCount ?? 0, awayStartsCount: awayProfile?.startsCount ?? 0,
       homeCareerGap: homeProfile?.careerGap ?? null, awayCareerGap: awayProfile?.careerGap ?? null,
     },
@@ -223,7 +239,6 @@ export async function processGame(game, season, ledger) {
   // --- Totals ---
   const homeBlendedRPG = blendEraEstimates(homeRuns.recentRunsPerGame, homeRuns.seasonRunsPerGame);
   const awayBlendedRPG = blendEraEstimates(awayRuns.recentRunsPerGame, awayRuns.seasonRunsPerGame);
-  const runParkFactor = getRunParkFactor(game.homeTeam);
   const projectedTotal = projectedTotalRuns({
     home: { runsPerGame: homeBlendedRPG * homeOffensiveFactor, startingPitcherEra: homeEra },
     away: { runsPerGame: awayBlendedRPG * awayOffensiveFactor, startingPitcherEra: awayEra },
