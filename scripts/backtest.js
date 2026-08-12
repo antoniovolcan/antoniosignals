@@ -27,6 +27,7 @@ import {
   fetchTeamRecentHitting, extractRunsPerGame,
   fetchGameLinescore, extractFinalScore, extractFirstFiveInningsScore,
   fetchPlayByPlay, extractPlateAppearances,
+  sumBullpenOutsFromBoxscore,
 } from '../lib/mlb.js';
 import {
   blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS, moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns,
@@ -62,6 +63,37 @@ const pitchHandCache = new Map(); // pitcherId -> 'L' | 'R' | null
 // A pitcher's prior-seasons career stats don't change day to day within a single backtest run
 // (they're seasons strictly before the one being tested), so one fetch per pitcher is enough.
 const yearByYearCache = new Map(); // pitcherId -> raw yearByYear response
+// A completed game's boxscore never changes, and the same past game gets looked up repeatedly as
+// the walk-forward loop's 3-day fatigue window slides forward one day at a time.
+const boxscoreCache = new Map(); // gamePk -> raw boxscore response
+
+async function getGameBoxscore(gamePk) {
+  if (!boxscoreCache.has(gamePk)) {
+    boxscoreCache.set(gamePk, await fetchGameBoxscore(gamePk));
+  }
+  return boxscoreCache.get(gamePk);
+}
+
+const BULLPEN_FATIGUE_WINDOW_DAYS = 3;
+
+// Instrumentation-only candidate (not fed into any projection yet): a team's total relief-pitcher
+// innings over the last BULLPEN_FATIGUE_WINDOW_DAYS days, as a proxy for how taxed the bullpen is
+// heading into today's game. Captured into `factors` so it can be tested locally against captured
+// data before touching the real model, same as the team ledger's Pythagorean/streak candidates.
+async function computeBullpenFatigueIP(teamId, cutoffDate) {
+  const schedule = await fetchTeamRecentSchedule(teamId, addDays(cutoffDate, -BULLPEN_FATIGUE_WINDOW_DAYS), addDays(cutoffDate, -1));
+  let outs = 0;
+  let gamesInWindow = 0;
+  for (const d of schedule.dates || []) {
+    for (const g of d.games || []) {
+      if (g.status?.detailedState !== 'Final') continue;
+      const box = await getGameBoxscore(g.gamePk);
+      outs += sumBullpenOutsFromBoxscore(box, teamId);
+      gamesInWindow += 1;
+    }
+  }
+  return { bullpenIP: outs / 3, gamesInWindow };
+}
 
 async function getPitcherYearByYearStats(pitcherId) {
   if (!yearByYearCache.has(pitcherId)) {
@@ -197,6 +229,11 @@ export async function processGame(game, season, ledger, teamLedger) {
   const homeTeamLedgerProfile = teamLedger ? getTeamLedgerProfile(teamLedger, game.homeTeamId) : null;
   const awayTeamLedgerProfile = teamLedger ? getTeamLedgerProfile(teamLedger, game.awayTeamId) : null;
 
+  const [homeBullpen, awayBullpen] = await Promise.all([
+    computeBullpenFatigueIP(game.homeTeamId, game.date),
+    computeBullpenFatigueIP(game.awayTeamId, game.date),
+  ]);
+
   const homePitcherId = game.homeProbablePitcherId;
   const awayPitcherId = game.awayProbablePitcherId;
   const [homeProfile, awayProfile] = await Promise.all([
@@ -250,6 +287,8 @@ export async function processGame(game, season, ledger, teamLedger) {
       homeRecentPythagWinPct: homeTeamLedgerProfile?.recentPythagWinPct ?? null, awayRecentPythagWinPct: awayTeamLedgerProfile?.recentPythagWinPct ?? null,
       homeStreak: homeTeamLedgerProfile?.streak ?? null, awayStreak: awayTeamLedgerProfile?.streak ?? null,
       homeHomeWinPct: homeTeamLedgerProfile?.homeWinPct ?? null, awayAwayWinPct: awayTeamLedgerProfile?.awayWinPct ?? null,
+      homeBullpenIP3d: homeBullpen.bullpenIP, awayBullpenIP3d: awayBullpen.bullpenIP,
+      homeBullpenGames3d: homeBullpen.gamesInWindow, awayBullpenGames3d: awayBullpen.gamesInWindow,
     },
   });
 
