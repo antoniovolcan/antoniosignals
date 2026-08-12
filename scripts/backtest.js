@@ -28,6 +28,7 @@ import {
   fetchGameLinescore, extractFinalScore, extractFirstFiveInningsScore,
   fetchPlayByPlay, extractPlateAppearances,
   sumBullpenOutsFromBoxscore,
+  fetchTeamTransactions, computeActiveILCount,
 } from '../lib/mlb.js';
 import {
   blendEraEstimates, computeOffensiveFactor, computeLineupOps, LEAGUE_AVG_TOP_WEIGHTED_OPS, moneylineEstimate, projectedTotalRuns, projectedFirstFiveInningsRuns,
@@ -75,6 +76,18 @@ async function getGameBoxscore(gamePk) {
 }
 
 const BULLPEN_FATIGUE_WINDOW_DAYS = 3;
+
+// A team's transactions for the whole season are fetched once and reused for every cutoffDate in
+// the run -- computeActiveILCount just replays/filters them in memory, so this avoids one fetch
+// per (team, game) that a per-game lookup would otherwise need.
+const transactionsCache = new Map(); // teamId -> raw transactions response (full season)
+
+async function getTeamTransactions(teamId, season) {
+  if (!transactionsCache.has(teamId)) {
+    transactionsCache.set(teamId, await fetchTeamTransactions(teamId, `${season}-01-01`, `${season}-12-31`));
+  }
+  return transactionsCache.get(teamId);
+}
 
 // Instrumentation-only candidate (not fed into any projection yet): a team's total relief-pitcher
 // innings over the last BULLPEN_FATIGUE_WINDOW_DAYS days, as a proxy for how taxed the bullpen is
@@ -229,10 +242,14 @@ export async function processGame(game, season, ledger, teamLedger) {
   const homeTeamLedgerProfile = teamLedger ? getTeamLedgerProfile(teamLedger, game.homeTeamId) : null;
   const awayTeamLedgerProfile = teamLedger ? getTeamLedgerProfile(teamLedger, game.awayTeamId) : null;
 
-  const [homeBullpen, awayBullpen] = await Promise.all([
+  const [homeBullpen, awayBullpen, homeTxns, awayTxns] = await Promise.all([
     computeBullpenFatigueIP(game.homeTeamId, game.date),
     computeBullpenFatigueIP(game.awayTeamId, game.date),
+    getTeamTransactions(game.homeTeamId, season),
+    getTeamTransactions(game.awayTeamId, season),
   ]);
+  const homeILCount = computeActiveILCount(homeTxns, game.date);
+  const awayILCount = computeActiveILCount(awayTxns, game.date);
 
   const homePitcherId = game.homeProbablePitcherId;
   const awayPitcherId = game.awayProbablePitcherId;
@@ -289,6 +306,7 @@ export async function processGame(game, season, ledger, teamLedger) {
       homeHomeWinPct: homeTeamLedgerProfile?.homeWinPct ?? null, awayAwayWinPct: awayTeamLedgerProfile?.awayWinPct ?? null,
       homeBullpenIP3d: homeBullpen.bullpenIP, awayBullpenIP3d: awayBullpen.bullpenIP,
       homeBullpenGames3d: homeBullpen.gamesInWindow, awayBullpenGames3d: awayBullpen.gamesInWindow,
+      homeILCount, awayILCount,
     },
   });
 
